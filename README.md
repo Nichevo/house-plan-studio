@@ -4,6 +4,18 @@ Build a floor plan of your house from photos and a few measurements. Works in th
 
 **Open it:** https://nichevo.github.io/house-plan-studio/
 
+![2D floor plan with rooms, doors, appliances and a garden](docs/screenshots/plan-2d.png)
+
+| 3D view you can orbit | On a phone |
+|---|---|
+| ![3D model with both floors spread apart and the garden](docs/screenshots/model-3d.png) | <img src="docs/screenshots/phone.png" alt="The plan on a phone-sized screen" width="260"> |
+
+| Appliances and furniture in a room | Building a room from photos |
+|---|---|
+| ![Room panel listing appliances with their positions and sizes](docs/screenshots/room-appliances.png) | ![Dialog for adding a room from its photos](docs/screenshots/room-from-photos.png) |
+
+*Screenshots show the built-in example house.*
+
 ## Install
 - **Android (Chrome):** open the link, then tap **Install app** in the top bar (or menu ⋮ → *Install app*).
 - **Windows (Chrome or Edge):** open the link, then click **Install app** in the top bar (or the install icon in the address bar).
