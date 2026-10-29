@@ -1,0 +1,14 @@
+{
+  "name": "House Plan Studio",
+  "short_name": "House Plan",
+  "description": "Build a floor plan of your house from photos and a few measurements.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#EEF1EF",
+  "theme_color": "#1D6A50",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

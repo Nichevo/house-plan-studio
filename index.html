@@ -1,0 +1,2011 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1D6A50">
+<meta name="description" content="Build a floor plan of your house from photos and a few measurements, with a 3D view and exports.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<script>
+/* Standalone app: replaces the claude.ai capabilities with local equivalents. */
+(function () {
+  var KEY = "house-api-key";
+  window.HOUSE_KEY = {
+    get: function () { try { return localStorage.getItem(KEY) || ""; } catch (e) { return ""; } },
+    set: function (v) { try { if (v) localStorage.setItem(KEY, v); else localStorage.removeItem(KEY); } catch (e) { } }
+  };
+  function b64(blob) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(String(r.result).split(",")[1]); }; r.onerror = rej; r.readAsDataURL(blob); }); }
+  function save(req) {
+    var blob = req.data instanceof Blob ? req.data : new Blob([req.data]);
+    var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = req.filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+    return Promise.resolve({ status: "saved" });
+  }
+  async function ask(prompt, opts) {
+    var key = HOUSE_KEY.get(); if (!key) throw { code: "not_granted", message: "Add your API key in Settings." };
+    var content = [];
+    for (var b of (opts && opts.images) || []) content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: await b64(b) } });
+    content.push({ type: "text", text: prompt });
+    var r;
+    try {
+      r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2026-10-21", "anthropic-beta": "server-side-fallback-2026-07-01", "anthropic-dangerous-direct-browser-access": "true" },
+        body: JSON.stringify({ model: "claude-opus-5-5", max_tokens: 16000, output_config: { effort: "medium" }, fallbacks: "default", messages: [{ role: "user", content: content }] })
+      });
+    } catch (e) { throw { code: "network", message: "Couldn't reach Anthropic. Check your connection." }; }
+    if (r.status === 401 || r.status === 403) throw { code: "bad_key", message: "Your API key was refused. Check it in Settings." };
+    if (r.status === 429 || r.status === 529) throw { code: "rate_limited", message: "Claude is busy. Try again in a minute." };
+    if (!r.ok) { var t = ""; try { t = (await r.json()).error.message; } catch (e) { } throw { code: "api_error", message: "Claude returned an error" + (t ? ": " + t : ".") }; }
+    var m = await r.json();
+    if (m.stop_reason === "refusal") throw { code: "refused", message: "Claude declined to look at these photos." };
+    return (m.content || []).filter(function (c) { return c.type === "text"; }).map(function (c) { return c.text; }).join("");
+  }
+  window.HOUSE_CAPS = function (name) {
+    if (name === "downloads") return { save: save };
+    if (name === "sample") {
+      if (!HOUSE_KEY.get()) return null;
+      var f = async function (p, o) { return { text: await ask(p, o), truncated: false }; };
+      f.limits = async function () { return { maxPromptBytes: 262144, images: { maxCount: 12, maxInputBytes: 30000000, mediaTypes: ["image/jpeg", "image/png", "image/webp"] } }; };
+      f.json = async function (p, o) {
+        var t = await ask(p, o), i = t.indexOf("{"), j = t.lastIndexOf("}");
+        try { return JSON.parse(t.slice(i, j + 1)); } catch (e) { throw { code: "invalid_json", text: t }; }
+      };
+      return f;
+    }
+    return null;
+  };
+  var deferred = null;
+  addEventListener("beforeinstallprompt", function (e) {
+    e.preventDefault(); deferred = e;
+    var bar = document.querySelector(".top"); if (!bar || document.getElementById("installBtn")) return;
+    var b = document.createElement("button"); b.className = "btn primary"; b.id = "installBtn"; b.textContent = "Install app";
+    b.onclick = function () { deferred.prompt(); deferred.userChoice.finally(function () { b.remove(); deferred = null; }); };
+    bar.insertBefore(b, document.getElementById("sync"));
+  });
+  if ("serviceWorker" in navigator) addEventListener("load", function () { navigator.serviceWorker.register("sw.js").catch(function () { }); });
+})();
+</script>
+</head>
+<body>
+<title>House Plan Studio</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: drafting table. Plan canvas fills the left, an inspector column on the right; on phones the canvas sits on top and the inspector scrolls below. */
+:root{
+  --paper:#EEF1EF; --panel:#FBFCFB; --ink:#1A2220; --muted:#5B6863; --line:#D3DAD7; --grid:#DCE3E0; --grid-major:#C7D0CC;
+  --accent:#1D6A50; --accent-soft:#DCEDE5; --accent-ink:#FFFFFF; --warn:#A8620B; --warn-soft:#F7EBD8; --bad:#B3392F; --ok:#2F7D4E;
+  --wall:#1A2220; --ghost:#8C9A95; --sel:#1D6A50;
+  --garden:#DCEBD3; --garden-line:#6E9A5B; --app:#FFFFFF; --furn:#E9DDCB; --gard-item:#BFD8AC;
+  --t0:#E4EEE9; --t1:#E9E6F1; --t2:#F2EADF; --t3:#E2EAF2; --t4:#EFE3E6; --t5:#E8EEDD; --t6:#E6ECEE;
+  --f-ui:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-label:"IBM Plex Sans Condensed", "IBM Plex Sans", "Arial Narrow", system-ui, sans-serif;
+  --f-num:"IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --gut-l:max(16px, env(safe-area-inset-left, 0px)); --gut-r:max(16px, env(safe-area-inset-right, 0px));
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --garden:#1D3322; --garden-line:#5E8F57; --app:#2E3836; --furn:#3E3428; --gard-item:#2F4A2A;
+  --paper:#121716; --panel:#192120; --ink:#E3EAE7; --muted:#93A29D; --line:#2B3634; --grid:#1E2826; --grid-major:#2A3533; --accent:#55C19A; --accent-soft:#1E3A30; --accent-ink:#0C1412; --warn:#E3A44B; --warn-soft:#3A2D18; --bad:#E77B70; --ok:#6CC08C;
+  --wall:#E3EAE7; --ghost:#5F6E69; --sel:#55C19A;
+  --t0:#1F2E29; --t1:#26243A; --t2:#33291D; --t3:#1F2A36; --t4:#33232A; --t5:#26301D; --t6:#1F2B2E; color-scheme:dark }}
+:root[data-theme="dark"]{
+  --garden:#1D3322; --garden-line:#5E8F57; --app:#2E3836; --furn:#3E3428; --gard-item:#2F4A2A;
+  --paper:#121716; --panel:#192120; --ink:#E3EAE7; --muted:#93A29D; --line:#2B3634; --grid:#1E2826;
+  --grid-major:#2A3533; --accent:#55C19A; --accent-soft:#1E3A30; --accent-ink:#0C1412; --warn:#E3A44B; --warn-soft:#3A2D18; --bad:#E77B70; --ok:#6CC08C;
+  --wall:#E3EAE7; --ghost:#5F6E69; --sel:#55C19A;
+  --t0:#1F2E29; --t1:#26243A; --t2:#33291D; --t3:#1F2A36; --t4:#33232A; --t5:#26301D; --t6:#1F2B2E; color-scheme:dark }
+
+[hidden]{display:none!important}
+html,body{height:100%}
+body{background:var(--paper);color:var(--ink);font:14px/1.45 var(--f-ui);display:flex;flex-direction:column;overflow:hidden}
+button,input,select{font:inherit;color:inherit;box-sizing:border-box}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.num{font-family:var(--f-num);font-variant-numeric:tabular-nums}
+
+/* top bar */
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding-block:8px;padding-left:var(--gut-l);padding-right:var(--gut-r);border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{display:flex;flex-direction:column;min-width:0;margin-right:auto}
+.brand b{font:600 15px/1.2 var(--f-label);letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand small{color:var(--muted);font-size:12px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--paper)}
+.seg button{border:0;background:none;padding:6px 11px;font:500 13px var(--f-label);letter-spacing:.02em;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:6px 11px;font:500 13px var(--f-label);letter-spacing:.02em;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.danger{color:var(--bad)}
+.btn.small{padding:4px 8px;font-size:12px}
+.btn:disabled{opacity:.45;cursor:default}
+.sync{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.sync i{width:8px;height:8px;border-radius:50%;background:var(--muted);display:inline-block}
+.sync[data-s="ok"] i{background:var(--ok)} .sync[data-s="busy"] i{background:var(--warn)} .sync[data-s="local"] i{background:var(--warn)}
+
+.banner{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding-block:8px;padding-left:var(--gut-l);padding-right:var(--gut-r);background:var(--warn-soft);color:var(--ink);font-size:13px;border-bottom:1px solid var(--line)}
+
+main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 380px}
+#stage{position:relative;min-height:0;overflow:hidden;background:var(--paper);touch-action:none}
+#plan{position:absolute;inset:0;width:100%;height:100%;display:block;user-select:none;-webkit-user-select:none}
+#three{position:absolute;inset:0}
+#three canvas{display:block;width:100%;height:100%}
+.overlay{position:absolute;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.ov-bl{left:calc(12px + env(safe-area-inset-left,0px));bottom:12px}
+.ov-tl{left:calc(12px + env(safe-area-inset-left,0px));top:12px;right:12px}
+.ov-tr{right:12px;top:12px}
+.overlay .btn,.overlay select{box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.overlay select{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:5px 8px;font:500 13px var(--f-label)}
+.emptyfloor{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;padding:16px}
+.emptyfloor .card{pointer-events:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;max-width:340px;display:flex;flex-direction:column;gap:10px;text-align:center;align-items:center}
+.hint{position:absolute;right:12px;bottom:12px;font-size:12px;color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px 8px;max-width:60%}
+
+aside{border-left:1px solid var(--line);background:var(--panel);overflow:auto;min-height:0}
+.tabs{display:flex;position:sticky;top:0;background:var(--panel);z-index:2;border-bottom:1px solid var(--line);padding-left:var(--gut-l);padding-right:var(--gut-r)}
+.tabs button{flex:1;border:0;background:none;padding:10px 4px;font:600 13px var(--f-label);letter-spacing:.04em;text-transform:uppercase;color:var(--muted);border-bottom:2px solid transparent}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+.pane{padding-block:14px 28px;padding-left:var(--gut-l);padding-right:var(--gut-r);display:flex;flex-direction:column;gap:18px}
+h2{font:600 13px var(--f-label);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+h3{font:600 16px/1.25 var(--f-label);margin:0;text-wrap:balance}
+.sec{display:flex;flex-direction:column;gap:8px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.grow{flex:1;min-width:0}
+.field{min-width:0;display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)}
+.field input,.field select,.inp{border:1px solid var(--line);background:var(--paper);border-radius:6px;padding:6px 8px;color:var(--ink);font-size:14px;min-width:0;width:100%}
+.inp.num,.field input.num{font-family:var(--f-num)}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.stats div{background:var(--panel);padding:8px 10px;display:flex;flex-direction:column}
+.stats span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-family:var(--f-label)}
+.stats b{font:500 15px var(--f-num)}
+.walls{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.wallrow{display:grid;grid-template-columns:minmax(0,1fr) 110px 22px;gap:8px;align-items:center;padding:6px 8px;border-top:1px solid var(--line)}
+.wallrow:first-child{border-top:0}
+.wallrow .nm{font-size:13px;display:flex;flex-direction:column;min-width:0}
+.wallrow .nm small{color:var(--muted);font-size:11px}
+.dot{width:10px;height:10px;border-radius:50%;border:2px solid var(--line);justify-self:center}
+.dot.on{background:var(--ok);border-color:var(--ok)}
+.chip{display:inline-flex;align-items:center;gap:4px;font:500 11px var(--f-label);letter-spacing:.03em;border-radius:999px;padding:2px 8px;background:var(--paper);color:var(--muted);border:1px solid var(--line);white-space:nowrap}
+.chip.ok{color:var(--ok);border-color:currentColor;background:transparent}
+.chip.warn{color:var(--warn);border-color:currentColor;background:transparent}
+.list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.item{display:flex;gap:10px;align-items:center;padding:9px 10px;border:0;border-top:1px solid var(--line);background:var(--panel);text-align:left;width:100%}
+.item:first-child{border-top:0}
+.item:hover{background:var(--paper)}
+.item[aria-current="true"]{background:var(--accent-soft)}
+.item .sw{width:14px;height:14px;border-radius:3px;border:1px solid var(--line);flex:none}
+.item .t{flex:1;min-width:0;display:flex;flex-direction:column}
+.item .t small{color:var(--muted);font-size:12px}
+.op{border:1px solid var(--line);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px}
+.op .grid3 .field input{padding:5px 6px;font-size:13px}
+.photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px}
+.ph{border:1px solid var(--line);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;background:var(--paper)}
+.ph img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;cursor:zoom-in;background:var(--line)}
+.ph .missing{aspect-ratio:4/3;display:grid;place-items:center;font-size:11px;color:var(--muted);padding:6px;text-align:center}
+.ph select{border:0;border-top:1px solid var(--line);background:var(--panel);font-size:12px;padding:4px}
+.ph .acts{display:flex;border-top:1px solid var(--line)}
+.ph .acts button{flex:1;border:0;background:var(--panel);font:500 11px var(--f-label);padding:5px 2px;color:var(--ink)}
+.ph .acts button+button{border-left:1px solid var(--line)}
+.drop{border:1.5px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--muted);font-size:13px;display:flex;flex-direction:column;gap:6px;align-items:center}
+.drop.over{border-color:var(--accent);color:var(--accent)}
+.gap{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border-top:1px solid var(--line);background:var(--panel);border-left:0;border-right:0;border-bottom:0;text-align:left;width:100%}
+.gap:first-child{border-top:0}
+.gap .k{flex:none;width:8px;height:8px;border-radius:50%;margin-top:6px;background:var(--warn)}
+.gap .k.bad{background:var(--bad)} .gap .k.info{background:var(--muted)}
+.meter{height:8px;border-radius:99px;background:var(--line);overflow:hidden}
+.meter i{display:block;height:100%;background:var(--accent)}
+table.tot{width:100%;border-collapse:collapse;font-size:13px}
+table.tot th,table.tot td{padding:6px 4px;border-bottom:1px solid var(--line);text-align:right}
+table.tot th:first-child,table.tot td:first-child{text-align:left}
+table.tot th{font:600 11px var(--f-label);text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+table.tot td{font-family:var(--f-num);font-variant-numeric:tabular-nums}
+table.tot td:first-child{font-family:var(--f-ui)}
+table.tot tr.sum td{font-weight:600;border-bottom:0}
+.muted{color:var(--muted)}
+.note{font-size:12px;color:var(--muted)}
+.confirm{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:13px}
+.empty{color:var(--muted);font-size:13px;padding:10px;border:1px dashed var(--line);border-radius:8px}
+
+/* plan svg classes */
+#plan .bg{fill:var(--paper)}
+.gminor{stroke:var(--grid)} .gmajor{stroke:var(--grid-major)}
+.room{stroke:none;cursor:move}
+.t0{fill:var(--t0)}.t1{fill:var(--t1)}.t2{fill:var(--t2)}.t3{fill:var(--t3)}.t4{fill:var(--t4)}.t5{fill:var(--t5)}.t6{fill:var(--t6)}
+.wall{fill:none;stroke:var(--wall);stroke-linejoin:miter}
+.gapl{stroke:var(--paper)}
+.sym{fill:none;stroke:var(--wall)}
+.win{stroke:var(--wall)}
+.ghost{fill:none;stroke:var(--ghost)}
+.selo{fill:none;stroke:var(--sel)}
+.lbl{fill:var(--ink);font-family:var(--f-label);font-weight:600;text-anchor:middle;pointer-events:none}
+.lbl2{fill:var(--muted);font-family:var(--f-num);text-anchor:middle;pointer-events:none}
+.dim{fill:var(--ink);font-family:var(--f-num);text-anchor:middle;dominant-baseline:middle;pointer-events:none}
+.dim.unk{fill:var(--warn)}
+.edge-hit{stroke:transparent;cursor:grab}
+.knob{fill:var(--panel);stroke:var(--sel);pointer-events:none}
+.out{fill:var(--garden);cursor:move}
+.fence{fill:none;stroke:var(--garden-line)}
+.itm{stroke:var(--wall);cursor:move}
+.itm.app{fill:var(--app)} .itm.furn{fill:var(--furn)} .itm.gard{fill:var(--gard-item)}
+.ilbl{fill:var(--muted);font-family:var(--f-label);text-anchor:middle;dominant-baseline:middle;pointer-events:none}
+.cam{fill:var(--accent);stroke:var(--panel);cursor:pointer}
+.camin{fill:var(--panel);pointer-events:none}
+.layers{position:absolute;top:56px;left:calc(12px + env(safe-area-inset-left,0px));z-index:6;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:7px;box-shadow:0 6px 24px rgba(0,0,0,.15);font-size:13px;max-width:calc(100% - 24px)}
+.layers label{display:flex;gap:8px;align-items:center}
+.viewer img{width:100%;max-height:70vh;object-fit:contain;background:#000;border-radius:8px}
+
+/* modal */
+.modal{position:fixed;inset:0;z-index:50;background:rgba(10,14,13,.55);display:flex;align-items:center;justify-content:center;padding:16px}
+.dlg{background:var(--panel);color:var(--ink);border-radius:12px;border:1px solid var(--line);width:min(720px,100%);max-height:calc(100% - 8px);overflow:auto;display:flex;flex-direction:column}
+.dlg.wide{width:min(1000px,100%)}
+.dlg header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:1}
+.dlg header h3{flex:1}
+.dlg .body{padding:14px 16px 18px;display:flex;flex-direction:column;gap:14px}
+.xbtn{border:0;background:none;font-size:22px;line-height:1;padding:2px 6px;color:var(--muted)}
+.mcanvas-wrap{position:relative;background:#000;border-radius:8px;overflow:hidden;touch-action:none}
+.mcanvas-wrap canvas{display:block;max-width:100%;max-height:62vh;width:auto;height:auto;margin:0 auto}
+.steps{display:flex;gap:8px;flex-wrap:wrap}
+.step{font-size:13px;padding:6px 10px;border-radius:8px;border:1px solid var(--line);color:var(--muted)}
+.step.on{border-color:var(--accent);color:var(--ink);background:var(--accent-soft)}
+.exgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.exbtn{border:1px solid var(--line);background:var(--paper);border-radius:8px;padding:10px 12px;text-align:left;display:flex;flex-direction:column;gap:2px}
+.exbtn:hover{border-color:var(--accent)}
+.exbtn b{font:600 14px var(--f-label)}
+.exbtn small{color:var(--muted);font-size:12px}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--panel);padding:8px 14px;border-radius:8px;font-size:13px;z-index:60;max-width:calc(100% - 32px)}
+.sugg{display:grid;grid-template-columns:22px minmax(0,1fr);gap:8px;align-items:start;padding:8px 0;border-top:1px solid var(--line)}
+.sugg:first-child{border-top:0}
+
+@media (max-width: 860px){
+  html,body{height:auto}
+  body{overflow:auto}
+  main{display:block}
+  #stage{height:58vh;height:58svh;min-height:340px}
+  aside{border-left:0;border-top:1px solid var(--line);overflow:visible}
+  .tabs{top:0}
+  .hint{display:none}
+}
+@media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
+</style>
+
+<div class="top">
+  <div class="brand"><b id="houseName">House Plan Studio</b><small id="subline">Floor plan from photos and measurements</small></div>
+  <div class="seg" id="floorTabs" role="group" aria-label="Floor"></div>
+  <div class="seg" role="group" aria-label="View">
+    <button id="v2d" aria-pressed="true">2D plan</button><button id="v3d" aria-pressed="false">3D</button>
+  </div>
+  <button class="btn" id="undoBtn" title="Undo">Undo</button>
+  <button class="btn" id="exportBtn">Export</button>
+  <button class="btn" id="settingsBtn">Settings</button>
+  <span class="sync" id="sync" data-s="local"><i></i><span>Starting</span></span>
+</div>
+<div class="banner" id="exampleBanner" hidden>
+  <span><b>This is an example house.</b> Edit it into your own, or start from a blank plan.</span>
+  <span class="confirm" id="blankWrap"><button class="btn small" id="blankBtn">Start a blank house</button></span>
+</div>
+<div class="banner" id="roBanner" hidden><span>You can view this plan but not change it.</span></div>
+
+<main>
+  <div id="stage">
+    <svg id="plan" aria-label="Floor plan"></svg>
+    <div id="three" hidden></div>
+    <div class="overlay ov-tl" id="addBar">
+      <button class="btn primary" id="addPhotoRoom">+ Room from photos</button>
+      <button class="btn" id="addRect">+ Room</button>
+      <button class="btn" id="addL">+ L-shaped room</button>
+      <button class="btn" id="addGarden">+ Garden</button>
+      <button class="btn" data-layers="1" aria-expanded="false">Show ▾</button>
+    </div>
+    <div class="overlay ov-tl" id="bar3d" hidden>
+      <select id="floors3d" aria-label="Floors shown">
+        <option value="current">This floor only</option>
+        <option value="all">All floors</option>
+        <option value="explode">All floors, spread apart</option>
+      </select>
+      <button class="btn" data-layers="1" aria-expanded="false">Show ▾</button>
+      <button class="btn" id="reset3d">Reset view</button>
+      <button class="btn" id="top3d">Top view</button>
+    </div>
+    <div class="emptyfloor" id="emptyFloor" hidden><div class="card"><h3>No rooms on this floor yet</h3><p class="note" style="margin:0">Walk through the house and add each room from its photos. The app works out the size and shape, and you correct anything that's off.</p><button class="btn primary" id="emptyPhotoRoom">Add a room from photos</button></div></div>
+    <div class="overlay ov-bl" id="zoomBar">
+      <button class="btn" id="zin" aria-label="Zoom in">+</button>
+      <button class="btn" id="zout" aria-label="Zoom out">−</button>
+      <button class="btn" id="zfit">Fit</button>
+    </div>
+    <div class="layers" id="layersPop" hidden>
+      <label data-only="2d"><input type="checkbox" data-ly="dims"> All wall lengths</label>
+      <label data-only="3d"><input type="checkbox" data-ly="labels"> Room labels</label>
+      <label><input type="checkbox" data-ly="app"> Appliances</label>
+      <label><input type="checkbox" data-ly="furn"> Furniture</label>
+      <label><input type="checkbox" data-ly="garden"> Garden and outdoor</label>
+      <label><input type="checkbox" data-ly="photos"> Photos</label>
+      <span class="note" data-only="2d">Photos appear as camera dots on the walls. Tap one to see it.</span>
+      <span class="note" data-only="3d">Photos are shown on the walls they were tagged to.</span>
+    </div>
+    <div class="hint" id="hint">Drag a room to move it. Select it, then drag a wall to resize. Scroll or pinch to zoom, drag empty space to pan.</div>
+  </div>
+  <aside>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tabRooms" aria-selected="true">Rooms</button>
+      <button role="tab" id="tabRoom" aria-selected="false">Room</button>
+      <button role="tab" id="tabTotals" aria-selected="false">Totals &amp; gaps</button>
+    </div>
+    <div id="pane" class="pane"></div>
+  </aside>
+</main>
+<input type="file" id="photoInput" accept="image/*" multiple hidden>
+<input type="file" id="projInput" accept="application/json,.json,application/zip,.zip" hidden>
+<div id="modalRoot"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/OBJExporter.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+"use strict";
+/* ---------- helpers ---------- */
+const $ = s => document.querySelector(s);
+const uid = () => Math.random().toString(36).slice(2, 10);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const clone = o => JSON.parse(JSON.stringify(o));
+const r2 = v => Math.round(v * 1000) / 1000;
+const STANDALONE = typeof window.HOUSE_CAPS === "function"; // installed app: local storage, own API key
+const cap = name => STANDALONE ? Promise.resolve(window.HOUSE_CAPS(name)) : (window.claude && window.claude.use) ? window.claude.use(name).catch(() => null) : Promise.resolve(null);
+function toast(msg, ms = 2600) {
+  const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
+  setTimeout(() => t.remove(), ms);
+}
+const LS_KEY = "house-plan-v1";
+const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { } };
+
+/* ---------- units ---------- */
+const FT = 0.3048, IN = 0.0254;
+function fmtLen(m, plan = S.plan) {
+  if (m == null || !isFinite(m)) return "–";
+  if (plan.units === "ft") { let i = Math.round(m / IN); const f = Math.floor(i / 12); i -= f * 12; return `${f}′ ${i}″`; }
+  return m.toFixed(2) + " m";
+}
+function fmtIn(m) {
+  if (S.plan.units === "ft") { let i = Math.round(m / IN); const f = Math.floor(i / 12); i -= f * 12; return `${f}' ${i}"`; }
+  return m.toFixed(2);
+}
+const fmtArea = (a, plan = S.plan) => plan.units === "ft" ? Math.round(a * 10.7639).toLocaleString() + " ft²" : a.toFixed(1) + " m²";
+const fmtVol = v => S.plan.units === "ft" ? Math.round(v * 35.3147).toLocaleString() + " ft³" : v.toFixed(1) + " m³";
+function parseLen(str) {
+  if (str == null) return null;
+  const s = String(str).trim().toLowerCase().replace(/,/g, ".").replace(/[’′]/g, "'").replace(/[”″]/g, '"');
+  if (!s) return null;
+  let m;
+  if ((m = s.match(/^(\d+(?:\.\d+)?)\s*(?:'|ft|feet|foot)\s*(?:(\d+(?:\.\d+)?)\s*(?:"|in|inch|inches)?)?$/))) return (+m[1]) * FT + (m[2] ? +m[2] * IN : 0);
+  if ((m = s.match(/^(\d+(?:\.\d+)?)\s*(?:"|in|inch|inches)$/))) return +m[1] * IN;
+  if ((m = s.match(/^(\d+(?:\.\d+)?)\s*mm$/))) return +m[1] / 1000;
+  if ((m = s.match(/^(\d+(?:\.\d+)?)\s*cm$/))) return +m[1] / 100;
+  if ((m = s.match(/^(\d+(?:\.\d+)?)\s*m$/))) return +m[1];
+  if ((m = s.match(/^(\d+(?:\.\d+)?)$/))) return S.plan.units === "ft" ? +m[1] * FT : +m[1];
+  return null;
+}
+
+/* ---------- geometry ---------- */
+function shoelace(p) { let s = 0; for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a[0] * b[1] - b[0] * a[1]; } return s; }
+const area = p => Math.abs(shoelace(p)) / 2;
+function normalize(room) { if (shoelace(room.pts) < 0) { room.pts.reverse(); room.openings = []; room.measured = {}; } }
+function edges(room) {
+  const p = room.pts, n = p.length, out = [];
+  for (let i = 0; i < n; i++) {
+    const a = p[i], b = p[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy) || 1e-9;
+    const d = [dx / len, dy / len];
+    out.push({ i, a, b, len, d, n: [-d[1], d[0]] }); // n = inward normal (clockwise polygons, y down)
+  }
+  return out;
+}
+const perim = room => edges(room).reduce((s, e) => s + e.len, 0);
+function bbox(pts) { let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 }; }
+function centroid(p) {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < p.length; i++) { const [x0, y0] = p[i], [x1, y1] = p[(i + 1) % p.length], f = x0 * y1 - x1 * y0; a += f; cx += (x0 + x1) * f; cy += (y0 + y1) * f; }
+  if (Math.abs(a) < 1e-9) return p[0];
+  const c = [cx / (3 * a), cy / (3 * a)];
+  if (pip(c, p)) return c;
+  // L-shapes: fall back to centre of the largest piece found by sampling
+  const b = bbox(p); let best = c, bd = -1;
+  for (let i = 1; i < 12; i++) for (let j = 1; j < 12; j++) {
+    const q = [b.x0 + b.w * i / 12, b.y0 + b.h * j / 12]; if (!pip(q, p)) continue;
+    const d = Math.min(...edges({ pts: p }).map(e => distSeg(q, e.a, e.b))); if (d > bd) { bd = d; best = q; }
+  }
+  return best;
+}
+function pip(q, p) { let ins = false; for (let i = 0, j = p.length - 1; i < p.length; j = i++) { const [xi, yi] = p[i], [xj, yj] = p[j]; if (((yi > q[1]) !== (yj > q[1])) && (q[0] < (xj - xi) * (q[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; }
+function distSeg(q, a, b) { const dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy; let t = l ? ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l : 0; t = Math.max(0, Math.min(1, t)); return Math.hypot(q[0] - a[0] - t * dx, q[1] - a[1] - t * dy); }
+function wallNames(room) {
+  const es = edges(room), base = es.map(e => { const o = [-e.n[0], -e.n[1]]; return Math.abs(o[0]) > Math.abs(o[1]) ? (o[0] > 0 ? "East" : "West") : (o[1] > 0 ? "South" : "North"); });
+  const cnt = {}; base.forEach(b => cnt[b] = (cnt[b] || 0) + 1);
+  const word = isOut(room) ? " side" : " wall";
+  const seen = {}; return base.map(b => { if (cnt[b] === 1) return b + word; seen[b] = (seen[b] || 0) + 1; return `${b}${word} ${seen[b]}`; });
+}
+/* change one wall's length by sliding the next wall along it (keeps right angles) */
+function setEdgeLength(room, i, L) {
+  const es = edges(room), e = es[i], n = room.pts.length, delta = L - e.len;
+  if (Math.abs(delta) < 1e-6) return true;
+  const before = clone(room.pts);
+  for (const k of [(i + 1) % n, (i + 2) % n]) { room.pts[k] = [r2(room.pts[k][0] + e.d[0] * delta), r2(room.pts[k][1] + e.d[1] * delta)]; }
+  if (edges(room).some(x => x.len < 0.2) || shoelace(room.pts) <= 0) { room.pts = before; return false; }
+  return true;
+}
+const roomH = room => room.height || floorOf(room).height;
+function floorOf(room) { return S.plan.floors.find(f => f.id === room.floor) || S.plan.floors[0]; }
+function floorElev(fid) { let z = 0; for (const f of S.plan.floors) { if (f.id === fid) return z; z += f.height + (f.slab ?? 0.25); } return z; }
+const roomsOn = fid => S.plan.rooms.filter(r => r.floor === fid);
+
+/* openings that cut each wall, including doors defined on the neighbouring room's matching wall */
+function computeCuts(plan) {
+  const map = {}; const t = plan.wallT;
+  for (const r of plan.rooms) map[r.id] = edges(r).map(() => []);
+  for (const A of plan.rooms) {
+    if (isOut(A)) continue;
+    const eA = edges(A);
+    for (const o of A.openings) {
+      const e = eA[o.edge]; if (!e) continue;
+      const s = Math.max(0, o.offset), en = Math.min(e.len, o.offset + o.width);
+      const cut = { s, e: en, sill: o.type === "window" ? o.sill : 0, top: (o.type === "window" ? o.sill : 0) + o.height, type: o.type, own: true, o };
+      map[A.id][o.edge].push(cut);
+      const P0 = [e.a[0] + e.d[0] * s, e.a[1] + e.d[1] * s], P1 = [e.a[0] + e.d[0] * en, e.a[1] + e.d[1] * en];
+      for (const B of plan.rooms) {
+        if (B === A || B.floor !== A.floor || isOut(B)) continue;
+        edges(B).forEach(f => {
+          if (Math.abs(e.d[0] * f.d[1] - e.d[1] * f.d[0]) > 0.02) return;
+          const off = Math.abs((P0[0] - f.a[0]) * f.n[0] + (P0[1] - f.a[1]) * f.n[1]); if (off > t * 1.6) return;
+          let u0 = (P0[0] - f.a[0]) * f.d[0] + (P0[1] - f.a[1]) * f.d[1], u1 = (P1[0] - f.a[0]) * f.d[0] + (P1[1] - f.a[1]) * f.d[1];
+          if (u0 > u1) [u0, u1] = [u1, u0]; u0 = Math.max(0, u0); u1 = Math.min(f.len, u1);
+          if (u1 - u0 > 0.05) map[B.id][f.i].push({ ...cut, s: u0, e: u1, own: false });
+        });
+      }
+    }
+  }
+  return map;
+}
+function roomStats(room, cuts) {
+  if (isOut(room)) { const a = area(room.pts); return { area: a, perim: perim(room), h: 0, wallGross: 0, wallNet: 0, vol: 0 }; }
+  const h = roomH(room), a = area(room.pts), p = perim(room);
+  let open = 0; (cuts[room.id] || []).forEach(list => list.forEach(c => open += (c.e - c.s) * (c.top - c.sill)));
+  return { area: a, perim: p, h, wallGross: p * h, wallNet: Math.max(0, p * h - open), vol: a * h };
+}
+
+/* ---------- state ---------- */
+const PALETTE_LIGHT = ["#E4EEE9", "#E9E6F1", "#F2EADF", "#E2EAF2", "#EFE3E6", "#E8EEDD", "#E6ECEE"];
+function rect(name, floor, x0, y0, x1, y1, c) { return { id: uid(), name, floor, c, kind: "room", pts: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], openings: [], photos: [], items: [], measured: {}, height: null }; }
+const isOut = r => r.kind === "outdoor";
+/* appliances, furniture and garden things: [label, layer, width along wall, depth, height, height off floor] */
+const ITEMS = {
+  fridge: ["Fridge freezer", "app", 0.6, 0.65, 1.85, 0], cooker: ["Cooker / oven", "app", 0.6, 0.6, 0.9, 0], hob: ["Hob", "app", 0.6, 0.52, 0.05, 0.9],
+  dishwasher: ["Dishwasher", "app", 0.6, 0.6, 0.85, 0], washer: ["Washing machine", "app", 0.6, 0.6, 0.85, 0], dryer: ["Tumble dryer", "app", 0.6, 0.6, 0.85, 0],
+  microwave: ["Microwave", "app", 0.5, 0.4, 0.3, 0.9], boiler: ["Boiler", "app", 0.45, 0.35, 0.7, 1.3], waterheater: ["Water heater", "app", 0.55, 0.55, 1.5, 0],
+  tv: ["TV", "app", 1.2, 0.1, 0.7, 0.55], radiator: ["Radiator", "app", 1.0, 0.1, 0.6, 0.15], heatpump: ["Heat pump / AC unit", "app", 0.9, 0.35, 0.7, 0],
+  units: ["Kitchen units", "furn", 2.4, 0.6, 0.9, 0], wallunits: ["Wall cupboards", "furn", 2.4, 0.35, 0.7, 1.45], sink: ["Sink / basin", "furn", 0.55, 0.45, 0.85, 0],
+  sofa: ["Sofa", "furn", 2.0, 0.9, 0.85, 0], armchair: ["Armchair", "furn", 0.85, 0.85, 0.9, 0], table: ["Table", "furn", 1.6, 0.9, 0.75, 0], desk: ["Desk", "furn", 1.2, 0.6, 0.75, 0],
+  bed: ["Double bed", "furn", 1.4, 2.0, 0.5, 0], bedsingle: ["Single bed", "furn", 0.9, 2.0, 0.5, 0], wardrobe: ["Wardrobe", "furn", 1.0, 0.6, 2.0, 0], drawers: ["Chest of drawers", "furn", 0.8, 0.45, 0.8, 0],
+  bookcase: ["Bookcase", "furn", 0.8, 0.3, 1.8, 0], bath: ["Bath", "furn", 1.7, 0.7, 0.55, 0], shower: ["Shower", "furn", 0.9, 0.9, 2.0, 0], toilet: ["Toilet", "furn", 0.4, 0.65, 0.8, 0],
+  shed: ["Shed", "gard", 2.4, 1.8, 2.2, 0], greenhouse: ["Greenhouse", "gard", 2.0, 2.5, 2.2, 0], patioset: ["Patio table and chairs", "gard", 1.6, 1.6, 0.75, 0], bbq: ["Barbecue", "gard", 1.2, 0.6, 1.0, 0],
+  tree: ["Tree", "gard", 3, 3, 5, 0], bush: ["Bush / shrub", "gard", 1.2, 1.2, 1.2, 0], planter: ["Flower bed / planter", "gard", 2.0, 0.6, 0.4, 0], bins: ["Bins", "gard", 1.4, 0.7, 1.1, 0],
+  trampoline: ["Trampoline", "gard", 3, 3, 0.9, 0], car: ["Car", "gard", 1.8, 4.5, 1.5, 0]
+};
+function makeItem(type, wall = 0, along = 0.2, extra = {}) {
+  const d = ITEMS[type] || ITEMS.units;
+  return { id: uid(), type: ITEMS[type] ? type : "units", label: d[0], wall, along, out: 0, w: d[2], d: d[3], h: d[4], z: d[5], on: true, ...extra };
+}
+const itemLayer = it => (ITEMS[it.type] || ITEMS.units)[1];
+const layerOn = (L, it) => it.on !== false && (itemLayer(it) === "gard" ? L.garden : L[itemLayer(it)]);
+/* an item sits against one wall: "along" from the wall's start corner, "out" from the wall face */
+function itemFrame(room, it) {
+  const e = edges(room)[it.wall] || edges(room)[0], t = isOut(room) ? 0 : S.plan.wallT / 2;
+  const b = [e.a[0] + e.d[0] * it.along + e.n[0] * (t + it.out), e.a[1] + e.d[1] * it.along + e.n[1] * (t + it.out)];
+  const p1 = [b[0] + e.d[0] * it.w, b[1] + e.d[1] * it.w], p2 = [p1[0] + e.n[0] * it.d, p1[1] + e.n[1] * it.d], p3 = [b[0] + e.n[0] * it.d, b[1] + e.n[1] * it.d];
+  return { pts: [b, p1, p2, p3], c: [(b[0] + p2[0]) / 2, (b[1] + p2[1]) / 2], e };
+}
+function clampItem(room, it) {
+  const es = edges(room); if (!es[it.wall]) it.wall = 0;
+  const e = es[it.wall]; it.w = Math.max(0.1, Math.min(it.w, 30)); it.d = Math.max(0.05, Math.min(it.d, 30));
+  it.along = r2(Math.max(0, Math.min(it.along, Math.max(0, e.len - it.w)))); it.out = r2(Math.max(0, it.out));
+}
+function parseItems(list, nWalls) {
+  return (Array.isArray(list) ? list : []).filter(x => x && ITEMS[x.type] && Number.isInteger(x.wall) && x.wall >= 0 && x.wall < nWalls).slice(0, 40).map(x => {
+    const it = makeItem(x.type, x.wall, +x.offset_m || 0, { out: Math.max(0, +x.from_wall_m || 0) });
+    if (x.width_m > 0.1 && x.width_m < 30) it.w = +x.width_m; if (x.depth_m > 0.05 && x.depth_m < 30) it.d = +x.depth_m; if (x.height_m > 0.05 && x.height_m < 30) it.h = +x.height_m;
+    if (typeof x.label === "string" && x.label.trim()) it.label = x.label.trim().slice(0, 40);
+    return it;
+  });
+}
+const ITEM_PROMPT = `Also list the appliances, large furniture and garden features you can see, so they can be drawn on the plan. Allowed types: ${Object.keys(ITEMS).join(", ")}. For each give the wall (or side) it stands against, offset_m from that wall's start corner going clockwise to the item's near edge, from_wall_m (0 if it stands against the wall), width_m along the wall, depth_m out from the wall, height_m, and a short label such as "American fridge freezer". Leave out small objects and anything you cannot place.`;
+const ITEM_JSON = `"items":[{"type":"fridge","label":"Fridge freezer","wall":1,"offset_m":0.3,"from_wall_m":0,"width_m":0.6,"depth_m":0.65,"height_m":1.85}]`;
+function door(edge, offset, width = 0.82, extra = {}) { return { id: uid(), type: "door", edge, offset, width, height: 2.03, sill: 0, hinge: "start", swing: "in", ...extra }; }
+function win(edge, offset, width = 1.2, extra = {}) { return { id: uid(), type: "window", edge, offset, width, height: 1.2, sill: 0.9, ...extra }; }
+function examplePlan() {
+  const g = "f0", u = "f1";
+  const R = [
+    rect("Living room", g, 0, 0, 5, 4.5, 0), rect("Kitchen", g, 5, 0, 10, 3.5, 2), rect("Hall", g, 0, 4.5, 2.2, 8, 6),
+    rect("Study", g, 2.2, 4.5, 5, 8, 3), rect("Dining", g, 5, 3.5, 8, 8, 1), rect("Utility", g, 8, 3.5, 10, 5.8, 5), rect("WC", g, 8, 5.8, 10, 8, 4),
+    rect("Bedroom 1", u, 0, 0, 4.5, 4, 1), rect("Ensuite", u, 4.5, 0, 6.3, 2.2, 3), rect("Closet", u, 4.5, 2.2, 6.3, 4, 5), rect("Bedroom 2", u, 6.3, 0, 10, 4, 0),
+    rect("Bedroom 3", u, 0, 4, 3.5, 8, 2), rect("Landing", u, 3.5, 4, 6, 8, 6), rect("Bathroom", u, 6, 4, 10, 8, 4)
+  ];
+  const by = n => R.find(r => r.name === n);
+  by("Living room").openings.push(win(0, 1.2, 2.2), win(3, 1.5, 1.4), door(2, 0.6, 0.9));
+  by("Kitchen").openings.push(win(0, 1.5, 1.8), door(2, 3.5, 0.9, { hinge: "end" }));
+  by("Hall").openings.push(door(2, 0.6, 0.95, { swing: "in" }), door(1, 1.0));
+  by("Study").openings.push(win(2, 0.8, 1.2));
+  by("Dining").openings.push(win(2, 0.9, 1.6), door(1, 0.6));
+  by("Utility").openings.push(win(1, 0.6, 0.9));
+  by("WC").openings.push(win(2, 0.6, 0.6, { sill: 1.3, height: 0.6 }), door(3, 0.5, 0.75));
+  by("Bedroom 1").openings.push(win(0, 1.4, 1.6), win(3, 1.2, 1.2), door(2, 3.6, 0.82, { hinge: "end" }));
+  by("Ensuite").openings.push(win(0, 0.5, 0.8, { sill: 1.2, height: 0.8 }), door(2, 0.4, 0.7));
+  by("Closet").openings.push(door(2, 0.5, 0.75));
+  by("Bedroom 2").openings.push(win(0, 1.0, 1.6), win(1, 1.2, 1.2), door(2, 0.4));
+  by("Bedroom 3").openings.push(win(2, 1.0, 1.6), win(3, 1.0, 1.2), door(1, 0.6));
+  by("Landing").openings.push(win(2, 0.8, 0.9));
+  by("Bathroom").openings.push(win(2, 1.4, 1.0, { sill: 1.1, height: 0.9 }), door(3, 2.6, 0.8));
+  by("Kitchen").items.push(makeItem("units", 0, 0.1, { w: 1.3 }), makeItem("fridge", 1, 0.2), makeItem("cooker", 0, 3.6), makeItem("dishwasher", 0, 4.2), makeItem("units", 1, 0.85, { w: 2.0 }));
+  by("Living room").items.push(makeItem("sofa", 3, 1.2, { w: 2.2 }), makeItem("tv", 1, 1.6), makeItem("armchair", 0, 3.6));
+  by("Dining").items.push(makeItem("table", 3, 1.6, { out: 0.6, w: 1.8, d: 1.0 }));
+  by("Utility").items.push(makeItem("washer", 0, 0.1), makeItem("dryer", 0, 0.75), makeItem("boiler", 1, 1.5));
+  by("Bedroom 1").items.push(makeItem("bed", 0, 1.5, { w: 1.5 }), makeItem("wardrobe", 3, 0.2));
+  by("Bathroom").items.push(makeItem("bath", 0, 0.1), makeItem("toilet", 1, 2.0), makeItem("sink", 1, 3.0));
+  const garden = rect("Back garden", g, 0, 8.12, 10, 18, 5); garden.kind = "outdoor";
+  garden.items.push(makeItem("shed", 2, 0.3), makeItem("tree", 1, 4.5, { out: 0.5 }), makeItem("patioset", 0, 2.6, { out: 0.8 }), makeItem("planter", 3, 1.0, { w: 4 }));
+  R.push(garden);
+  return {
+    v: 1, example: true, name: "Example house", units: "m", wallT: 0.12, updated: 0,
+    floors: [{ id: g, name: "Ground floor", height: 2.5, slab: 0.25 }, { id: u, name: "Upstairs", height: 2.4, slab: 0.25 }],
+    rooms: R
+  };
+}
+function blankPlan() {
+  return { v: 1, example: false, name: "My house", units: S.plan?.units || "m", wallT: 0.12, updated: Date.now(),
+    floors: [{ id: "f0", name: "Ground floor", height: 2.5, slab: 0.25 }, { id: "f1", name: "Upstairs", height: 2.4, slab: 0.25 }], rooms: [] };
+}
+const S = { plan: null, floor: "f0", sel: null, selItem: null, view: "2d", tab: "rooms", undo: [], k: 50, tx: 40, ty: 40, canWrite: true, pendingConfirm: null,
+  layers: (() => { const d = { dims: false, labels: true, app: true, furn: true, garden: true, photos: false }; try { return { ...d, ...JSON.parse(localStorage.getItem("house-layers") || "{}") }; } catch { return d; } })() };
+const localPhotoURL = {}; // photo id -> object URL (photos kept on this device)
+
+function validPlan(p) { return p && Array.isArray(p.rooms) && Array.isArray(p.floors) && p.floors.length; }
+function migrate(p) {
+  p.units ||= "m"; p.wallT ||= 0.12;
+  p.rooms.forEach((r, i) => { r.openings ||= []; r.photos ||= []; r.items ||= []; r.kind ||= "room"; r.measured ||= {}; if (r.c == null) r.c = i % 7; if (!p.floors.some(f => f.id === r.floor)) r.floor = p.floors[0].id; });
+  return p;
+}
+function pushUndo(snapshot) { S.undo.push(snapshot); if (S.undo.length > 60) S.undo.shift(); }
+function commit(before) {
+  if (before) pushUndo(before);
+  S.plan.example = false; S.plan.updated = Date.now();
+  renderAll(); scheduleSave();
+}
+function edit(fn) { const before = JSON.stringify(S.plan); fn(); commit(before); }
+function undo() {
+  const s = S.undo.pop(); if (!s) return;
+  S.plan = JSON.parse(s); S.plan.updated = Date.now();
+  if (S.sel && !S.plan.rooms.some(r => r.id === S.sel)) S.sel = null;
+  renderAll(); scheduleSave();
+}
+const selRoom = () => S.plan.rooms.find(r => r.id === S.sel) || null;
+
+/* ---------- storage: shared db + assets when available, this device otherwise ---------- */
+const store = { db: null, assets: null, downloads: null, sample: null, user: null, ready: false, saving: false, again: false, timer: 0, lastRemote: 0 };
+function setSync(state, text) { const el = $("#sync"); el.dataset.s = state; el.lastElementChild.textContent = text; }
+function scheduleSave() {
+  lsSet(LS_KEY, JSON.stringify(S.plan));
+  clearTimeout(store.timer);
+  if (store.db && S.canWrite) { setSync("busy", "Saving…"); store.timer = setTimeout(flushSave, 700); }
+  else setSync("local", "Saved on this device");
+}
+async function flushSave() {
+  if (!store.db) return;
+  if (store.saving) { store.again = true; return; }
+  store.saving = true;
+  try {
+    await store.db.doc("plans/house").set({ json: JSON.stringify(S.plan), updated: S.plan.updated });
+    store.lastRemote = S.plan.updated;
+    setSync("ok", "Saved, syncs to your devices");
+  } catch (e) {
+    if (e && e.code === "invalid_argument") { S.canWrite = false; $("#roBanner").hidden = false; setSync("local", "Saved on this device"); }
+    else setSync("local", "Not synced, saved on this device");
+  } finally {
+    store.saving = false;
+    if (store.again) { store.again = false; flushSave(); }
+  }
+}
+async function initStore() {
+  const [db, assets, downloads, sample, user] = await Promise.all(["db", "assets", "downloads", "sample", "user"].map(cap));
+  Object.assign(store, { db, assets, downloads, sample, user });
+  if (user) {
+    try { const c = user.can ? await user.can("data.write") : null; if (c === false) { S.canWrite = false; $("#roBanner").hidden = false; } } catch { }
+  }
+  if (!db) { setSync("local", "Saved on this device"); renderAll(); return; }
+  let first = true;
+  db.doc("plans/house").onSnapshot(snap => {
+    if (snap.metadata.hasPendingWrites) return;
+    if (!snap.exists) {
+      if (first && !S.plan.example && S.canWrite) flushSave();
+      else if (first) setSync("ok", "Synced");
+      first = false; return;
+    }
+    const d = snap.data();
+    if (first || (d.updated > S.plan.updated && !drag && !store.saving)) {
+      if (d.updated > S.plan.updated || S.plan.example) {
+        try { const p = JSON.parse(d.json); if (validPlan(p)) { S.plan = migrate(p); store.lastRemote = d.updated; if (!first) toast("Plan updated from your other device"); fixFloor(); renderAll(); loadLocalPhotos(); } } catch { }
+      } else if (first && S.plan.updated > d.updated && S.canWrite) flushSave();
+    }
+    first = false; setSync("ok", "Saved, syncs to your devices");
+  }, () => setSync("local", "Not synced, saved on this device"));
+  renderAll();
+}
+/* IndexedDB fallback for photos when shared storage isn't available */
+const idb = {
+  open() { return new Promise((res, rej) => { try { const r = indexedDB.open("house-photos", 1); r.onupgradeneeded = () => r.result.createObjectStore("p"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }); },
+  async put(k, v) { const d = await this.open(); return new Promise((res, rej) => { const t = d.transaction("p", "readwrite"); t.objectStore("p").put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); }); },
+  async get(k) { const d = await this.open(); return new Promise((res, rej) => { const q = d.transaction("p").objectStore("p").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
+  async del(k) { const d = await this.open(); return new Promise(res => { const t = d.transaction("p", "readwrite"); t.objectStore("p").delete(k); t.oncomplete = res; t.onerror = res; }); }
+};
+async function loadLocalPhotos() {
+  for (const r of S.plan.rooms) for (const p of r.photos) {
+    if (p.asset || localPhotoURL[p.id] !== undefined) continue;
+    localPhotoURL[p.id] = null;
+    try { const b = await idb.get(p.id); if (b) { localPhotoURL[p.id] = URL.createObjectURL(b); } } catch { }
+  }
+  if (S.tab === "room") renderPane();
+}
+const photoURL = p => p.asset ? "/_blob/" + p.asset : localPhotoURL[p.id] || null;
+async function photoBlob(p) {
+  if (p.asset) { const r = await fetch("/_blob/" + p.asset); if (!r.ok) throw new Error("missing"); return r.blob(); }
+  const b = await idb.get(p.id); if (!b) throw new Error("missing"); return b;
+}
+function downscale(blob, max = 2400, q = 0.86) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(blob), img = new Image();
+    img.onload = () => {
+      const s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)), w = Math.round(img.naturalWidth * s), h = Math.round(img.naturalHeight * s);
+      const c = document.createElement("canvas"); c.width = w; c.height = h; c.getContext("2d").drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url); c.toBlob(b => b ? res({ blob: b, w, h }) : rej(new Error("encode")), "image/jpeg", q);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("This file isn't an image the browser can read.")); };
+    img.src = url;
+  });
+}
+async function addPhotos(room, files) {
+  const list = [...files].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|gif)$/i.test(f.name));
+  if (!list.length) return;
+  setSync("busy", `Adding ${list.length} photo${list.length > 1 ? "s" : ""}…`);
+  let added = 0, failed = 0;
+  for (const f of list) {
+    try {
+      const { blob, w, h } = await downscale(f);
+      const p = { id: uid(), name: f.name.slice(0, 80), w, h, wall: null, added: Date.now() };
+      if (store.assets) { const up = await store.assets.upload(blob, { type: "image/jpeg" }); p.asset = up.id; }
+      else { await idb.put(p.id, blob); localPhotoURL[p.id] = URL.createObjectURL(blob); p.local = true; }
+      const r = S.plan.rooms.find(x => x.id === room.id); if (!r) break;
+      const before = JSON.stringify(S.plan); r.photos.push(p); pushUndo(before); added++;
+    } catch (e) { failed++; console.warn(e); }
+  }
+  commit();
+  if (failed) toast(`${failed} photo${failed > 1 ? "s" : ""} could not be added. HEIC photos may need converting to JPEG first.`, 4000);
+  else if (added) toast(`Added ${added} photo${added > 1 ? "s" : ""}. Tag which wall each one shows.`);
+}
+
+/* ---------- 2D plan ---------- */
+const svg = $("#plan");
+function planMarkup(fid, o) {
+  const k = o.k, fs = 12 / k, t = S.plan.wallT, out = [];
+  let rooms = roomsOn(fid);
+  const others = S.plan.floors.filter(f => f.id !== fid);
+  if (o.ghost) {
+    const idx = S.plan.floors.findIndex(f => f.id === fid), nb = S.plan.floors[idx - 1] || S.plan.floors[idx + 1];
+    if (nb) for (const r of roomsOn(nb.id)) out.push(`<polygon class="ghost" points="${r.pts.join(" ")}" stroke-width="${1.2 / k}" stroke-dasharray="${5 / k} ${4 / k}"/>`);
+  }
+  const L = o.layers || S.layers;
+  const outs = L.garden ? rooms.filter(isOut) : [], ins = rooms.filter(r => !isOut(r));
+  for (const r of outs) out.push(`<polygon class="out" data-room="${r.id}" points="${r.pts.join(" ")}"/><polygon class="fence" points="${r.pts.join(" ")}" stroke-width="${1.6 / k}" stroke-dasharray="${6 / k} ${3 / k}"/>`);
+  rooms = [...outs, ...ins];
+  for (const r of ins) out.push(`<polygon class="room t${r.c % 7}" data-room="${r.id}" points="${r.pts.join(" ")}"/>`);
+  for (const r of ins) out.push(`<polygon class="wall" points="${r.pts.join(" ")}" stroke-width="${t}"/>`);
+  // openings: clear the wall, then draw the symbol
+  for (const r of ins) {
+    const es = edges(r);
+    for (const op of r.openings) {
+      const e = es[op.edge]; if (!e) continue;
+      const P = s => [e.a[0] + e.d[0] * s, e.a[1] + e.d[1] * s];
+      const A = P(op.offset), B = P(op.offset + op.width);
+      out.push(`<line class="gapl" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke-width="${t * 1.35}"/>`);
+      if (op.type === "door") {
+        const hingeStart = op.hinge !== "end", out_ = op.swing === "out";
+        const H = hingeStart ? A : B, F = hingeStart ? B : A, nn = out_ ? [-e.n[0], -e.n[1]] : e.n, w = op.width;
+        const L = [H[0] + nn[0] * w, H[1] + nn[1] * w], sweep = (hingeStart !== out_) ? 1 : 0;
+        out.push(`<line class="sym" x1="${H[0]}" y1="${H[1]}" x2="${L[0]}" y2="${L[1]}" stroke-width="${1.6 / k}"/>`);
+        out.push(`<path class="sym" d="M${F[0]},${F[1]} A${w},${w} 0 0 ${sweep} ${L[0]},${L[1]}" stroke-width="${1 / k}" stroke-dasharray="${3 / k} ${2 / k}"/>`);
+      } else {
+        for (const f of [-0.28, 0, 0.28]) {
+          const ox = e.n[0] * t * f, oy = e.n[1] * t * f;
+          out.push(`<line class="win" x1="${A[0] + ox}" y1="${A[1] + oy}" x2="${B[0] + ox}" y2="${B[1] + oy}" stroke-width="${(f ? 1.2 : 0.8) / k}"/>`);
+        }
+        for (const Q of [A, B]) out.push(`<line class="win" x1="${Q[0] - e.n[0] * t / 2}" y1="${Q[1] - e.n[1] * t / 2}" x2="${Q[0] + e.n[0] * t / 2}" y2="${Q[1] + e.n[1] * t / 2}" stroke-width="${1.2 / k}"/>`);
+      }
+    }
+  }
+  // appliances, furniture and garden things
+  for (const r of rooms) for (const it of r.items || []) {
+    const ly = itemLayer(it); if (!layerOn(L, it)) continue;
+    const f = itemFrame(r, it);
+    out.push(`<polygon class="itm ${ly}" data-item="${r.id}:${it.id}" points="${f.pts.join(" ")}" stroke-width="${1 / k}"/>`);
+    if (it.type === "tree" || it.type === "bush") out.push(`<circle class="itm gard" cx="${f.c[0]}" cy="${f.c[1]}" r="${Math.min(it.w, it.d) / 2}" stroke-width="${1 / k}" pointer-events="none"/>`);
+    if (Math.min(it.w, it.d) * k > 22 || Math.max(it.w, it.d) * k > 60) {
+      let ang = Math.atan2(f.e.d[1], f.e.d[0]) * 180 / Math.PI; if (it.d > it.w * 1.6) ang += 90; if (ang > 90) ang -= 180; if (ang <= -90) ang += 180;
+      const lab = it.label.length > 16 ? it.label.slice(0, 15) + "…" : it.label;
+      out.push(`<text class="ilbl" x="${f.c[0]}" y="${f.c[1]}" font-size="${fs * 0.72}" transform="rotate(${ang} ${f.c[0]} ${f.c[1]})">${esc(lab)}</text>`);
+    }
+  }
+  // selection outline
+  const sr = o.sel && rooms.find(r => r.id === o.sel);
+  if (sr) out.push(`<polygon class="selo" points="${sr.pts.join(" ")}" stroke-width="${3 / k}" stroke-dasharray="${8 / k} ${4 / k}"/>`);
+  // labels
+  for (const r of rooms) {
+    const c = centroid(r.pts), b = bbox(r.pts), big = Math.min(b.w, b.h) * k > 70;
+    const nfs = fs * (big ? 1.15 : 0.95);
+    out.push(`<text class="lbl" x="${c[0]}" y="${c[1] - (big ? fs * 0.2 : 0)}" font-size="${nfs}">${esc(r.name)}</text>`);
+    if (big) out.push(`<text class="lbl2" x="${c[0]}" y="${c[1] + fs * 1.2}" font-size="${fs * 0.9}">${esc(fmtArea(area(r.pts)))}</text>`);
+  }
+  // wall lengths, placed just inside each wall
+  for (const r of rooms) {
+    if (!(o.dimsAll || r.id === o.sel)) continue;
+    const names = edges(r);
+    for (const e of names) {
+      if (e.len * k < 34) continue;
+      const m = [(e.a[0] + e.b[0]) / 2 + e.n[0] * (t / 2 + fs * 0.95), (e.a[1] + e.b[1]) / 2 + e.n[1] * (t / 2 + fs * 0.95)];
+      let ang = Math.atan2(e.d[1], e.d[0]) * 180 / Math.PI; if (ang > 90) ang -= 180; if (ang <= -90) ang += 180;
+      const known = r.measured[e.i];
+      out.push(`<text class="dim${known ? "" : " unk"}" x="${m[0]}" y="${m[1]}" font-size="${fs * 0.88}" transform="rotate(${ang} ${m[0]} ${m[1]})">${esc(fmtLen(e.len))}${known ? "" : " ?"}</text>`);
+    }
+  }
+  if (o.interactive && L.photos) {
+    for (const r of rooms) {
+      const es = edges(r), per = {};
+      r.photos.forEach(p => { if (p.wall != null && es[p.wall]) (per[p.wall] ||= []).push(p); });
+      for (const w in per) per[w].forEach((p, i) => {
+        const e = es[w], s = e.len * (i + 1) / (per[w].length + 1), inset = (isOut(r) ? 0 : t / 2) + 10 / k;
+        const c = [e.a[0] + e.d[0] * s + e.n[0] * inset, e.a[1] + e.d[1] * s + e.n[1] * inset];
+        out.push(`<circle class="cam" data-photo="${r.id}:${p.id}" cx="${c[0]}" cy="${c[1]}" r="${8 / k}" stroke-width="${2 / k}"/><circle class="camin" cx="${c[0]}" cy="${c[1]}" r="${3 / k}"/>`);
+      });
+    }
+  }
+  if (sr && o.interactive) {
+    for (const e of edges(sr)) {
+      out.push(`<line class="edge-hit" data-edge="${e.i}" x1="${e.a[0]}" y1="${e.a[1]}" x2="${e.b[0]}" y2="${e.b[1]}" stroke-width="${22 / k}"/>`);
+      const m = [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2];
+      out.push(`<circle class="knob" cx="${m[0]}" cy="${m[1]}" r="${5.5 / k}" stroke-width="${2 / k}"/>`);
+    }
+  }
+  return out.join("");
+}
+function renderPlan() {
+  if (S.view !== "2d") return;
+  const W = svg.clientWidth || 800, H = svg.clientHeight || 600, k = S.k;
+  const x0 = -S.tx / k, y0 = -S.ty / k, x1 = x0 + W / k, y1 = y0 + H / k;
+  let grid = "";
+  const minor = k > 30 ? 0.5 : 1, major = 1;
+  const lines = [];
+  for (let x = Math.floor(x0 / minor) * minor; x <= x1; x += minor) { const mj = Math.abs(x / major - Math.round(x / major)) < 1e-6; lines.push(`<line class="${mj ? "gmajor" : "gminor"}" x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke-width="${1 / k}"/>`); }
+  for (let y = Math.floor(y0 / minor) * minor; y <= y1; y += minor) { const mj = Math.abs(y / major - Math.round(y / major)) < 1e-6; lines.push(`<line class="${mj ? "gmajor" : "gminor"}" x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke-width="${1 / k}"/>`); }
+  grid = lines.join("");
+  svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${grid}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims })}</g>`;
+}
+function fit(fid) {
+  const rooms = fid ? roomsOn(fid) : S.plan.rooms, W = svg.clientWidth || 800, H = svg.clientHeight || 600;
+  const pts = rooms.flatMap(r => r.pts); if (!pts.length) { S.k = 50; S.tx = W / 2 - 100; S.ty = H / 2 - 100; return; }
+  const b = bbox(pts), padT = 64, pad = 30;
+  S.k = Math.max(8, Math.min(200, Math.min((W - pad * 2) / Math.max(b.w, 1), (H - padT - pad) / Math.max(b.h, 1))));
+  S.tx = (W - b.w * S.k) / 2 - b.x0 * S.k; S.ty = padT + (H - padT - pad - b.h * S.k) / 2 - b.y0 * S.k;
+}
+/* pointer interaction: move rooms, push walls, pan and pinch */
+let drag = null; const pointers = new Map(); let pinch = null;
+const toM = (cx, cy) => { const r = svg.getBoundingClientRect(); return [(cx - r.left - S.tx) / S.k, (cy - r.top - S.ty) / S.k]; };
+function snapTargets(room, axis) {
+  const fl = S.plan.floors.map(f => f.id), vals = [];
+  for (const r of S.plan.rooms) { if (r.id === room.id) continue; if (!fl.includes(r.floor)) continue; for (const p of r.pts) vals.push(p[axis]); }
+  return vals;
+}
+function snapVal(v, targets, thr) { let best = null, bd = thr; for (const t of targets) { const d = Math.abs(t - v); if (d < bd) { bd = d; best = t; } } return best; }
+svg.addEventListener("pointerdown", e => {
+  if (e.button > 0) return;
+  svg.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    if (drag && drag.before && drag.moved) commit(drag.before);
+    drag = null; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], k: S.k, tx: S.tx, ty: S.ty };
+    return;
+  }
+  const edgeEl = e.target.closest("[data-edge]"), roomEl = e.target.closest("[data-room]"), camEl = e.target.closest("[data-photo]"), itemEl = e.target.closest("[data-item]");
+  const p0 = toM(e.clientX, e.clientY), sc = [e.clientX, e.clientY];
+  if (camEl) { const [rid, pid] = camEl.dataset.photo.split(":"); drag = null; pointers.delete(e.pointerId); openPhotoViewer(rid, pid); return; }
+  if (itemEl && !edgeEl) {
+    const [rid, iid] = itemEl.dataset.item.split(":"), r = S.plan.rooms.find(x => x.id === rid), it = r && r.items.find(x => x.id === iid);
+    if (it) {
+      if (S.sel !== rid || S.selItem !== iid) { S.sel = rid; S.selItem = iid; S.tab = "room"; renderAll(); }
+      drag = { type: S.canWrite ? "item" : "none", id: rid, iid, start: { along: it.along, out: it.out }, p0, sc, before: JSON.stringify(S.plan), moved: false };
+      return;
+    }
+  }
+  if (edgeEl && S.canWrite) {
+    const r = selRoom(); drag = { type: "edge", i: +edgeEl.dataset.edge, id: r.id, start: clone(r.pts), p0, sc, before: JSON.stringify(S.plan), moved: false };
+  } else if (roomEl) {
+    const id = roomEl.dataset.room;
+    if (S.sel !== id) { S.sel = id; S.tab = "room"; renderAll(); }
+    const r = selRoom(); drag = { type: "room", id, start: clone(r.pts), p0, sc, before: JSON.stringify(S.plan), moved: false };
+    if (!S.canWrite) drag.type = "none";
+  } else drag = { type: "pan", sc, tx: S.tx, ty: S.ty, moved: false };
+});
+svg.addEventListener("pointermove", e => {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  if (pinch && pointers.size >= 2) {
+    const [a, b] = [...pointers.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const rc = svg.getBoundingClientRect(), nk = Math.max(6, Math.min(400, pinch.k * d / pinch.d));
+    const wx = (pinch.m[0] - rc.left - pinch.tx) / pinch.k, wy = (pinch.m[1] - rc.top - pinch.ty) / pinch.k;
+    S.k = nk; S.tx = m[0] - rc.left - wx * nk; S.ty = m[1] - rc.top - wy * nk; renderPlan(); return;
+  }
+  if (!drag) return;
+  const ds = Math.hypot(e.clientX - drag.sc[0], e.clientY - drag.sc[1]);
+  if (!drag.moved && ds < 4) return;
+  drag.moved = true;
+  if (drag.type === "pan") { S.tx = drag.tx + e.clientX - drag.sc[0]; S.ty = drag.ty + e.clientY - drag.sc[1]; renderPlan(); return; }
+  const r = S.plan.rooms.find(x => x.id === drag.id); if (!r) return;
+  const p = toM(e.clientX, e.clientY), dx = p[0] - drag.p0[0], dy = p[1] - drag.p0[1], thr = Math.max(0.06, 10 / S.k), grid = S.k > 60 ? 0.05 : 0.1;
+  if (drag.type === "item") {
+    const it = r.items.find(x => x.id === drag.iid); if (!it) return;
+    const e0 = edges(r)[it.wall]; if (!e0) return;
+    const g5 = v => Math.round(v / 0.05) * 0.05;
+    it.along = g5(drag.start.along + dx * e0.d[0] + dy * e0.d[1]); it.out = g5(drag.start.out + dx * e0.n[0] + dy * e0.n[1]);
+    clampItem(r, it); renderPlan(); return;
+  }
+  if (drag.type === "room") {
+    const snapAxis = (axis, dv) => {
+      const xs = [...new Set(drag.start.map(q => q[axis]))], tg = snapTargets(r, axis);
+      let best = null, bd = thr;
+      for (const v of xs) for (const t of tg) { const d = Math.abs(v + dv - t); if (d < bd) { bd = d; best = t - v; } }
+      if (best != null) return best;
+      const m0 = Math.min(...xs); return Math.round((m0 + dv) / grid) * grid - m0;
+    };
+    const sx = snapAxis(0, dx), sy = snapAxis(1, dy);
+    r.pts = drag.start.map(q => [r2(q[0] + sx), r2(q[1] + sy)]);
+  } else if (drag.type === "edge") {
+    const n = drag.start.length, i = drag.i, a = drag.start[i], b = drag.start[(i + 1) % n];
+    const e0 = edges({ pts: drag.start })[i], d = dx * e0.n[0] + dy * e0.n[1];
+    const pts = clone(drag.start);
+    if (Math.abs(e0.n[0]) > 0.999 || Math.abs(e0.n[1]) > 0.999) {
+      const axis = Math.abs(e0.n[0]) > 0.999 ? 0 : 1, raw = a[axis] + d * e0.n[axis];
+      const s = snapVal(raw, snapTargets(r, axis), thr), v = r2(s != null ? s : Math.round(raw / grid) * grid);
+      pts[i][axis] = v; pts[(i + 1) % n][axis] = v;
+    } else { for (const k of [i, (i + 1) % n]) { pts[k] = [r2(pts[k][0] + e0.n[0] * d), r2(pts[k][1] + e0.n[1] * d)]; } }
+    if (!edges({ pts }).some(x => x.len < 0.3) && shoelace(pts) > 0) r.pts = pts;
+  }
+  renderPlan();
+});
+function endPointer(e) {
+  pointers.delete(e.pointerId);
+  if (pinch) { if (pointers.size < 2) pinch = null; drag = null; return; }
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (d.type === "pan" && !d.moved) { if (S.sel) { S.sel = null; if (S.tab === "room") S.tab = "rooms"; renderAll(); } return; }
+  if (d.type === "item") { if (d.moved) commit(d.before); else renderPane(); return; }
+  if ((d.type === "room" || d.type === "edge") && d.moved) {
+    const r = S.plan.rooms.find(x => x.id === d.id);
+    if (d.type === "edge" && r) { const n = r.pts.length; delete r.measured[(d.i + n - 1) % n]; delete r.measured[(d.i + 1) % n]; }
+    if (r) { r.openings.forEach(o => clampOpening(r, o)); r.items.forEach(it => clampItem(r, it)); }
+    commit(d.before);
+  }
+}
+svg.addEventListener("pointerup", endPointer);
+svg.addEventListener("pointercancel", endPointer);
+svg.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rc = svg.getBoundingClientRect(), f = Math.exp(-e.deltaY * 0.0015), nk = Math.max(6, Math.min(400, S.k * f));
+  const wx = (e.clientX - rc.left - S.tx) / S.k, wy = (e.clientY - rc.top - S.ty) / S.k;
+  S.k = nk; S.tx = e.clientX - rc.left - wx * nk; S.ty = e.clientY - rc.top - wy * nk; renderPlan();
+}, { passive: false });
+function zoomBy(f) { const W = svg.clientWidth, H = svg.clientHeight, wx = (W / 2 - S.tx) / S.k, wy = (H / 2 - S.ty) / S.k; S.k = Math.max(6, Math.min(400, S.k * f)); S.tx = W / 2 - wx * S.k; S.ty = H / 2 - wy * S.k; renderPlan(); }
+function clampOpening(r, o) { const e = edges(r)[o.edge]; if (!e) { o.edge = 0; return; } o.width = Math.min(o.width, Math.max(0.2, e.len - 0.1)); o.offset = Math.max(0.05, Math.min(o.offset, e.len - o.width - 0.05)); }
+
+function addRoom(shape, kind) {
+  const W = svg.clientWidth || 600, H = svg.clientHeight || 400;
+  const cx = Math.round(((W / 2 - S.tx) / S.k) * 10) / 10, cy = Math.round(((H / 2 - S.ty) / S.k) * 10) / 10;
+  const n = roomsOn(S.floor).length;
+  const r = rect(`Room ${n + 1}`, S.floor, cx - 1.75, cy - 1.5, cx + 1.75, cy + 1.5, (S.plan.rooms.length) % 7);
+  if (shape === "L") { const x0 = cx - 2, y0 = cy - 2; r.pts = [[x0, y0], [x0 + 4, y0], [x0 + 4, y0 + 2], [x0 + 2, y0 + 2], [x0 + 2, y0 + 4], [x0, y0 + 4]]; r.name = `Room ${n + 1}`; }
+  if (kind === "outdoor") { r.kind = "outdoor"; r.name = roomsOn(S.floor).some(x => isOut(x)) ? "Garden " + (roomsOn(S.floor).filter(isOut).length + 1) : "Garden"; r.pts = [[cx - 4, cy - 3], [cx + 4, cy - 3], [cx + 4, cy + 3], [cx - 4, cy + 3]]; r.c = 5; }
+  r.pts = r.pts.map(p => [r2(p[0]), r2(p[1])]);
+  edit(() => { S.plan.rooms.push(r); S.sel = r.id; S.tab = "room"; });
+  toast("Room added. Drag it into place, then set its wall lengths.");
+}
+
+/* ---------- side panel ---------- */
+const pane = $("#pane");
+function swatch(r) { return `<span class="sw t${r.c % 7}" style="background:${PALETTE_LIGHT[r.c % 7]}"></span>`; }
+function roomStatus(r) {
+  const names = edges(r), axes = { h: false, v: false };
+  names.forEach(e => { if (r.measured[e.i]) { if (Math.abs(e.d[0]) > Math.abs(e.d[1])) axes.h = true; else axes.v = true; } });
+  const walls = new Set(r.photos.filter(p => p.wall != null).map(p => p.wall));
+  const long = names.filter(e => e.len >= 0.6);
+  const covered = long.filter(e => walls.has(e.i)).length;
+  if (isOut(r)) return { measured: axes.h && axes.v, covered: r.photos.length ? 1 : 0, total: 1, photos: r.photos.length, done: axes.h && axes.v && r.photos.length > 0 };
+  return { measured: axes.h && axes.v, covered, total: long.length, photos: r.photos.length, done: axes.h && axes.v && covered === long.length };
+}
+function renderRooms() {
+  const parts = [];
+  for (const f of S.plan.floors) {
+    const rs = roomsOn(f.id);
+    parts.push(`<div class="sec"><h2>${esc(f.name)} · ${rs.length} room${rs.length === 1 ? "" : "s"}</h2>`);
+    if (!rs.length) parts.push(`<div class="empty">No rooms yet. Switch to this floor and tap <b>+ Room</b>.</div>`);
+    else {
+      parts.push(`<div class="list">`);
+      for (const r of rs) {
+        const st = roomStatus(r);
+        parts.push(`<button class="item" data-pick="${r.id}" aria-current="${r.id === S.sel}">${swatch(r)}<span class="t"><span>${esc(r.name)}</span><small class="num">${esc(fmtArea(area(r.pts)))} · ${esc(fmtLen(bbox(r.pts).w))} × ${esc(fmtLen(bbox(r.pts).h))}</small></span>
+          <span class="chip ${st.covered === st.total && st.total ? "ok" : "warn"}">${isOut(r) ? `${st.photos} photo${st.photos === 1 ? "" : "s"}` : `${st.covered}/${st.total} walls`}</span>
+          <span class="chip ${st.measured ? "ok" : "warn"}">${st.measured ? "Measured" : "Guess"}</span></button>`);
+      }
+      parts.push(`</div>`);
+    }
+    parts.push(`</div>`);
+  }
+  parts.push(`<p class="note">Walls counts how many walls have a photo tagged to them. Measured means at least one wall in each direction has a real measurement.</p>`);
+  pane.innerHTML = parts.join("");
+}
+function renderRoom() {
+  const r = selRoom();
+  if (!r) { pane.innerHTML = `<div class="empty">Tap a room on the plan, or pick one from the Rooms tab.</div>`; return; }
+  const ro = !S.canWrite, cuts = computeCuts(S.plan), st = roomStats(r, cuts), es = edges(r), names = wallNames(r);
+  const wallOpts = sel => `<option value="">Which wall?</option>` + names.map((n, i) => `<option value="${i}" ${sel === i ? "selected" : ""}>${n}</option>`).join("");
+  const photosOn = i => r.photos.filter(p => p.wall === i).length;
+  const isRect = r.pts.length === 4, out = isOut(r), W = out ? "side" : "wall";
+  const presetOpts = Object.entries(ITEMS).sort((a, b) => (out ? (a[1][1] === "gard" ? -1 : 0) - (b[1][1] === "gard" ? -1 : 0) : 0)).map(([k, v]) => `<option value="${k}">${v[0]}</option>`).join("");
+  pane.innerHTML = `
+  <div class="sec">
+    <div class="row"><h3 class="grow">${esc(r.name)}</h3><span class="chip">${esc(floorOf(r).name)}</span></div>
+    <div class="grid2">
+      <label class="field">Name<input id="rName" value="${esc(r.name)}" ${ro ? "disabled" : ""}></label>
+      <label class="field">Floor<select id="rFloor" ${ro ? "disabled" : ""}>${S.plan.floors.map(f => `<option value="${f.id}" ${f.id === r.floor ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select></label>
+      <label class="field">Type<select id="rKind" ${ro ? "disabled" : ""}><option value="room" ${out ? "" : "selected"}>Indoor room</option><option value="outdoor" ${out ? "selected" : ""}>Garden or outdoor area</option></select></label>
+    </div>
+    <div class="stats">
+      <div><span>${out ? "Area" : "Floor area"}</span><b>${fmtArea(st.area)}</b></div>
+      <div><span>${out ? "Boundary length" : "Perimeter"}</span><b>${fmtLen(st.perim)}</b></div>
+      ${out ? "" : `<div><span>Wall area (paint)</span><b>${fmtArea(st.wallNet)}</b></div>
+      <div><span>Volume</span><b>${fmtVol(st.vol)}</b></div>`}
+    </div>
+  </div>
+  <div class="sec">
+    <h2>${out ? "Sides" : "Walls"}</h2>
+    ${isRect ? `<div class="grid2"><label class="field">Width (east–west)<input class="num" id="rW" value="${esc(fmtIn(es[0].len))}" ${ro ? "disabled" : ""}></label><label class="field">Depth (north–south)<input class="num" id="rD" value="${esc(fmtIn(es[1].len))}" ${ro ? "disabled" : ""}></label></div>` : ""}
+    <div class="walls">
+      ${es.map((e, i) => `<div class="wallrow"><span class="nm">${names[i]}<small>${photosOn(i)} photo${photosOn(i) === 1 ? "" : "s"} · ${r.measured[i] ? "measured" : "guess"}</small></span>
+        <input class="inp num" data-wlen="${i}" value="${esc(fmtIn(e.len))}" aria-label="${names[i]} length" ${ro ? "disabled" : ""}>
+        <span class="dot ${r.measured[i] ? "on" : ""}" title="${r.measured[i] ? "Measured" : "Not measured yet"}"></span></div>`).join("")}
+    </div>
+    <div class="grid2" ${out ? "hidden" : ""}>
+      <label class="field">Ceiling height<input class="num" id="rH" value="${esc(fmtIn(roomH(r)))}" ${ro ? "disabled" : ""}></label>
+      <div class="field">&nbsp;<span class="note">${r.height ? "Set for this room" : "Uses the floor's height"}</span></div>
+    </div>
+    <p class="note">Type a length to mark that ${W} as measured, for example ${S.plan.units === "ft" ? `12' 6" or 150in` : "3.45 or 345cm"}. Changing a wall slides the wall after it, so corners stay square.</p>
+  </div>
+  <div class="sec">
+    <div class="row"><h2 class="grow" style="margin:0">${out ? "Things in the garden" : "Appliances and furniture"} · ${r.items.length}</h2>
+      ${store.sample && !ro ? `<button class="btn small" id="aiItems" ${r.photos.length ? "" : "disabled"} title="${r.photos.length ? "" : "Add photos first"}">Find in photos</button>` : ""}</div>
+    ${ro ? "" : `<div class="row"><select class="inp grow" id="itPick" aria-label="Item to add">${presetOpts}</select><button class="btn small" id="itAdd">+ Add</button></div>`}
+    ${r.items.map(it => `<div class="op" data-it="${it.id}" ${S.selItem === it.id ? 'style="border-color:var(--accent)"' : ""}>
+      <div class="row"><input class="inp grow" data-if="label" value="${esc(it.label)}" aria-label="Name" ${ro ? "disabled" : ""}>
+        <label class="note" style="display:flex;gap:4px;align-items:center"><input type="checkbox" data-if="on" ${it.on !== false ? "checked" : ""} ${ro ? "disabled" : ""}> Show</label>
+        ${ro ? "" : `<button class="btn small" data-itturn="${it.id}" title="Swap width and depth">Turn</button><button class="btn small danger" data-itdel="${it.id}">Remove</button>`}</div>
+      <div class="grid3">
+        <label class="field">Against<select data-if="wall" ${ro ? "disabled" : ""}>${names.map((n, i) => `<option value="${i}" ${it.wall === i ? "selected" : ""}>${n}</option>`).join("")}</select></label>
+        <label class="field">From corner<input class="num" data-if="along" value="${esc(fmtIn(it.along))}" ${ro ? "disabled" : ""}></label>
+        <label class="field">From ${W}<input class="num" data-if="out" value="${esc(fmtIn(it.out))}" ${ro ? "disabled" : ""}></label>
+        <label class="field">Width<input class="num" data-if="w" value="${esc(fmtIn(it.w))}" ${ro ? "disabled" : ""}></label>
+        <label class="field">Depth<input class="num" data-if="d" value="${esc(fmtIn(it.d))}" ${ro ? "disabled" : ""}></label>
+        <label class="field">Height<input class="num" data-if="h" value="${esc(fmtIn(it.h))}" ${ro ? "disabled" : ""}></label>
+      </div></div>`).join("") || `<div class="empty">${out ? "Add a shed, trees, a patio or anything else in this space." : "Nothing added yet. Use Find in photos, or pick from the list."} Drag items on the plan to move them.</div>`}
+  </div>
+  <div class="sec" ${out ? "hidden" : ""}>
+    <div class="row"><h2 class="grow" style="margin:0">Doors and windows</h2>
+      ${ro ? "" : `<button class="btn small" id="addDoor">+ Door</button><button class="btn small" id="addWin">+ Window</button>`}</div>
+    ${r.openings.length ? r.openings.map(o => `<div class="op" data-op="${o.id}">
+      <div class="row"><b class="grow">${o.type === "door" ? "Door" : "Window"}</b>
+        <select class="inp" data-of="edge" style="width:auto" ${ro ? "disabled" : ""}>${names.map((n, i) => `<option value="${i}" ${o.edge === i ? "selected" : ""}>${n}</option>`).join("")}</select>
+        ${ro ? "" : `<button class="btn small danger" data-opdel="${o.id}">Remove</button>`}</div>
+      <div class="grid3">
+        <label class="field">From corner<input class="num" data-of="offset" value="${esc(fmtIn(o.offset))}" ${ro ? "disabled" : ""}></label>
+        <label class="field">Width<input class="num" data-of="width" value="${esc(fmtIn(o.width))}" ${ro ? "disabled" : ""}></label>
+        <label class="field">Height<input class="num" data-of="height" value="${esc(fmtIn(o.height))}" ${ro ? "disabled" : ""}></label>
+        ${o.type === "window" ? `<label class="field">Sill height<input class="num" data-of="sill" value="${esc(fmtIn(o.sill))}" ${ro ? "disabled" : ""}></label>` :
+      `<label class="field">Hinge<select data-of="hinge" ${ro ? "disabled" : ""}><option value="start" ${o.hinge !== "end" ? "selected" : ""}>Left</option><option value="end" ${o.hinge === "end" ? "selected" : ""}>Right</option></select></label>
+           <label class="field">Opens<select data-of="swing" ${ro ? "disabled" : ""}><option value="in" ${o.swing !== "out" ? "selected" : ""}>Into room</option><option value="out" ${o.swing === "out" ? "selected" : ""}>Outward</option></select></label>`}
+      </div></div>`).join("") : `<div class="empty">No doors or windows yet.</div>`}
+    <p class="note">A door on a shared wall opens up the neighbouring room's wall too, so add it once.</p>
+  </div>
+  <div class="sec">
+    <div class="row"><h2 class="grow" style="margin:0">Photos · ${r.photos.length}</h2>${store.sample ? `<button class="btn small primary" id="aiBtn" ${r.photos.length && !ro ? "" : "disabled"}>Estimate with Claude</button>` : ""}</div>
+    ${r.photos.length ? `<div class="photos">${r.photos.map(p => { const u = photoURL(p); return `<div class="ph" data-ph="${p.id}">
+        ${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-measure="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
+        <select data-tag="${p.id}" aria-label="Wall shown" ${ro ? "disabled" : ""}>${wallOpts(p.wall)}</select>
+        <div class="acts"><button data-measure="${p.id}" ${u ? "" : "disabled"}>Measure</button>${ro ? "" : `<button data-phdel="${p.id}">Delete</button>`}</div></div>`; }).join("")}</div>` : ""}
+    ${ro ? "" : `<div class="drop" id="drop"><span>Take or choose photos of this room. One per wall, shot straight on, works best.</span><button class="btn" id="addPhotos">Add photos</button></div>`}
+    <div id="phConfirm"></div>
+    ${store.assets ? "" : `<p class="note">Photos are kept in this browser on this device.</p>`}
+  </div>
+  ${ro ? "" : `<div class="sec"><div class="row"><button class="btn" id="rotRoom">Rotate 90°</button><button class="btn" id="flipRoom">Flip</button><button class="btn" id="dupRoom">Duplicate room</button><span class="confirm" id="delWrap"><button class="btn danger" id="delRoom">Delete room</button></span></div></div>`}`;
+  bindRoom(r);
+}
+function bindRoom(r) {
+  const id = r.id, R = () => S.plan.rooms.find(x => x.id === id);
+  const on = (sel, ev, fn) => { const el = pane.querySelector(sel); if (el) el.addEventListener(ev, fn); };
+  on("#rName", "change", e => edit(() => { R().name = e.target.value.trim() || "Room"; }));
+  on("#rFloor", "change", e => edit(() => { R().floor = e.target.value; S.floor = e.target.value; }));
+  on("#rKind", "change", e => edit(() => { R().kind = e.target.value; }));
+  on("#itAdd", "click", () => edit(() => { const rr = R(), it = makeItem(pane.querySelector("#itPick").value, 0, 0.2); clampItem(rr, it); rr.items.push(it); S.selItem = it.id; }));
+  on("#aiItems", "click", () => estimateRoom(id, { itemsOnly: true }));
+  pane.querySelectorAll("[data-it]").forEach(box => {
+    const iid = box.dataset.it;
+    box.querySelectorAll("[data-if]").forEach(el => el.addEventListener("change", () => {
+      const f = el.dataset.if;
+      edit(() => {
+        const rr = R(), it = rr.items.find(x => x.id === iid); if (!it) return;
+        if (f === "label") it.label = el.value.trim().slice(0, 40) || it.label;
+        else if (f === "on") it.on = el.checked;
+        else if (f === "wall") it.wall = +el.value;
+        else { const v = parseLen(el.value); if (v != null && v >= 0 && v < 30) it[f] = v; else toast("That length wasn't understood."); }
+        clampItem(rr, it);
+      });
+    }));
+  });
+  pane.querySelectorAll("[data-itturn]").forEach(b => b.addEventListener("click", () => edit(() => { const rr = R(), it = rr.items.find(x => x.id === b.dataset.itturn); if (it) { [it.w, it.d] = [it.d, it.w]; clampItem(rr, it); } })));
+  pane.querySelectorAll("[data-itdel]").forEach(b => b.addEventListener("click", () => edit(() => { const rr = R(); rr.items = rr.items.filter(x => x.id !== b.dataset.itdel); })));
+  const lenInput = (el, apply) => el.addEventListener("change", () => {
+    const v = parseLen(el.value);
+    if (v == null || v < 0.2 || v > 60) { toast("Enter a length such as " + (S.plan.units === "ft" ? `12' 6"` : "3.45")); renderPane(); return; }
+    edit(() => { if (apply(v) === false) toast("That length would make the room fold over itself."); });
+  });
+  pane.querySelectorAll("[data-wlen]").forEach(el => lenInput(el, v => { const i = +el.dataset.wlen, rr = R(); const ok = setEdgeLength(rr, i, v); if (ok) rr.measured[i] = true; rr.openings.forEach(o => clampOpening(rr, o)); return ok; }));
+  const wd = (sel, i) => { const el = pane.querySelector(sel); if (el) lenInput(el, v => { const rr = R(); const ok = setEdgeLength(rr, i, v); if (ok) { rr.measured[i] = true; rr.measured[i + 2] = true; } rr.openings.forEach(o => clampOpening(rr, o)); return ok; }); };
+  wd("#rW", 0); wd("#rD", 1);
+  const hEl = pane.querySelector("#rH"); if (hEl) hEl.addEventListener("change", () => { const v = parseLen(hEl.value); if (v == null || v < 1.5 || v > 8) { toast("Enter a ceiling height between 1.5 m and 8 m."); renderPane(); return; } edit(() => { R().height = v; }); });
+  on("#addDoor", "click", () => edit(() => { const rr = R(), e = edges(rr)[0]; const o = door(0, Math.max(0.1, e.len / 2 - 0.41)); clampOpening(rr, o); rr.openings.push(o); }));
+  on("#addWin", "click", () => edit(() => { const rr = R(), e = edges(rr)[0]; const o = win(0, Math.max(0.1, e.len / 2 - 0.6)); clampOpening(rr, o); rr.openings.push(o); }));
+  pane.querySelectorAll("[data-op]").forEach(box => {
+    const oid = box.dataset.op;
+    box.querySelectorAll("[data-of]").forEach(el => el.addEventListener("change", () => {
+      const f = el.dataset.of;
+      edit(() => {
+        const rr = R(), o = rr.openings.find(x => x.id === oid); if (!o) return;
+        if (f === "edge") o.edge = +el.value; else if (f === "hinge" || f === "swing") o[f] = el.value;
+        else { const v = parseLen(el.value); if (v != null && v >= 0 && v < 20) o[f] = v; else toast("That length wasn't understood."); }
+        clampOpening(rr, o);
+      });
+    }));
+  });
+  pane.querySelectorAll("[data-opdel]").forEach(b => b.addEventListener("click", () => edit(() => { const rr = R(); rr.openings = rr.openings.filter(o => o.id !== b.dataset.opdel); })));
+  pane.querySelectorAll("[data-tag]").forEach(el => el.addEventListener("change", () => edit(() => { const p = R().photos.find(x => x.id === el.dataset.tag); if (p) p.wall = el.value === "" ? null : +el.value; })));
+  pane.querySelectorAll("[data-measure]").forEach(el => el.addEventListener("click", () => openMeasure(id, el.dataset.measure)));
+  pane.querySelectorAll("[data-phdel]").forEach(b => b.addEventListener("click", () => {
+    const box = pane.querySelector("#phConfirm");
+    box.innerHTML = `<div class="confirm"><span>Delete this photo for good?</span><button class="btn small danger" id="phYes">Delete photo</button><button class="btn small" id="phNo">Keep it</button></div>`;
+    box.querySelector("#phNo").onclick = () => box.innerHTML = "";
+    box.querySelector("#phYes").onclick = async () => {
+      const rr = R(), p = rr.photos.find(x => x.id === b.dataset.phdel); if (!p) return;
+      edit(() => { rr.photos = rr.photos.filter(x => x.id !== p.id); });
+      S.undo.pop(); // a deleted photo can't be brought back, so don't offer undo for it
+      try { if (p.asset && store.assets) await store.assets.delete(p.asset); else await idb.del(p.id); } catch { }
+    };
+  }));
+  on("#addPhotos", "click", () => { const inp = $("#photoInput"); inp.dataset.room = id; inp.value = ""; inp.click(); });
+  const drop = pane.querySelector("#drop");
+  if (drop) {
+    drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); addPhotos(R(), e.dataTransfer.files); });
+  }
+  on("#aiBtn", "click", () => estimateRoom(id));
+  on("#rotRoom", "click", () => edit(() => rotateRoom(R())));
+  on("#flipRoom", "click", () => edit(() => flipRoom(R())));
+  on("#dupRoom", "click", () => edit(() => { const c = clone(R()); c.id = uid(); c.name += " copy"; c.photos = []; c.pts = c.pts.map(p => [p[0] + 0.5, p[1] + 0.5]); c.openings.forEach(o => o.id = uid()); (c.items || []).forEach(o => o.id = uid()); S.plan.rooms.push(c); S.sel = c.id; }));
+  on("#delRoom", "click", () => {
+    const w = pane.querySelector("#delWrap");
+    w.innerHTML = `<span>Delete ${esc(R().name)}?</span><button class="btn danger" id="delYes">Delete</button><button class="btn" id="delNo">Cancel</button>`;
+    w.querySelector("#delNo").onclick = renderPane;
+    w.querySelector("#delYes").onclick = () => { edit(() => { S.plan.rooms = S.plan.rooms.filter(x => x.id !== id); S.sel = null; S.tab = "rooms"; }); toast("Room deleted. Undo brings it back."); };
+  });
+}
+$("#photoInput").addEventListener("change", e => { const r = S.plan.rooms.find(x => x.id === e.target.dataset.room); if (r) addPhotos(r, e.target.files); });
+
+function findGaps() {
+  const g = [], cuts = computeCuts(S.plan);
+  for (const f of S.plan.floors) {
+    const rs = roomsOn(f.id);
+    for (const r of rs) {
+      const st = roomStatus(r), names = wallNames(r), es = edges(r);
+      if (!r.photos.length) g.push({ lvl: "warn", room: r.id, t: `Add photos of the ${r.name}`, s: f.name });
+      else if (!isOut(r) && st.covered < st.total) { const miss = es.filter(e => e.len >= 0.6 && !r.photos.some(p => p.wall === e.i)).map(e => names[e.i]); g.push({ lvl: "warn", room: r.id, t: `${r.name}: no photo of ${miss.join(", ")}`, s: r.photos.some(p => p.wall == null) ? "Some photos aren't tagged to a wall yet" : f.name }); }
+      if (!st.measured) g.push({ lvl: "warn", room: r.id, t: `${r.name}: size is a guess`, s: "Measure one wall in each direction, or use Measure on a photo" });
+      const hasDoor = (cuts[r.id] || []).some(l => l.some(c => c.type === "door"));
+      if (!hasDoor && !isOut(r)) g.push({ lvl: "info", room: r.id, t: `${r.name} has no door`, s: "Add one if it isn't open-plan" });
+    }
+    for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
+      const a = rs[i], b = rs[j], A = bbox(a.pts), B = bbox(b.pts);
+      if (isOut(a) || isOut(b)) continue;
+      const x0 = Math.max(A.x0, B.x0), x1 = Math.min(A.x1, B.x1), y0 = Math.max(A.y0, B.y0), y1 = Math.min(A.y1, B.y1);
+      if (x1 - x0 < 0.1 || y1 - y0 < 0.1) continue;
+      let n = 0; const st = 0.1;
+      for (let x = x0 + st / 2; x < x1; x += st) for (let y = y0 + st / 2; y < y1; y += st) if (pip([x, y], a.pts) && pip([x, y], b.pts)) n++;
+      const ov = n * st * st; if (ov > 0.15) g.push({ lvl: "bad", room: a.id, t: `${a.name} overlaps ${b.name} by about ${fmtArea(ov)}`, s: f.name });
+    }
+  }
+  return g;
+}
+function renderTotals() {
+  const cuts = computeCuts(S.plan), rows = [];
+  let T = { n: 0, a: 0, w: 0, v: 0 };
+  for (const f of S.plan.floors) {
+    const rs = roomsOn(f.id).filter(r => !isOut(r)); let a = 0, w = 0, v = 0;
+    rs.forEach(r => { const s = roomStats(r, cuts); a += s.area; w += s.wallNet; v += s.vol; });
+    T.n += rs.length; T.a += a; T.w += w; T.v += v;
+    const fp = rs.length ? bbox(rs.flatMap(r => r.pts)) : null;
+    rows.push({ f, n: rs.length, a, w, v, fp });
+  }
+  const gaps = findGaps(), done = S.plan.rooms.filter(r => roomStatus(r).done).length, pct = S.plan.rooms.length ? Math.round(done / S.plan.rooms.length * 100) : 0;
+  pane.innerHTML = `
+  <div class="sec">
+    <h2>Plan completeness</h2>
+    <div class="row"><div class="meter grow"><i style="width:${pct}%"></i></div><b class="num">${pct}%</b></div>
+    <p class="note">${done} of ${S.plan.rooms.length} rooms have a photo of every wall and real measurements.</p>
+  </div>
+  <div class="sec">
+    <h2>To finish the plan · ${gaps.length}</h2>
+    ${gaps.length ? `<div class="list">${gaps.slice(0, 60).map(x => `<button class="gap" data-pick="${x.room}"><span class="k ${x.lvl}"></span><span class="t" style="display:flex;flex-direction:column;min-width:0"><span>${esc(x.t)}</span><small class="muted">${esc(x.s)}</small></span></button>`).join("")}</div>` : `<div class="empty">Nothing missing. Every room is measured and photographed.</div>`}
+  </div>
+  <div class="sec">
+    <h2>Totals</h2>
+    <div style="overflow-x:auto"><table class="tot"><thead><tr><th>Floor</th><th>Rooms</th><th>Floor area</th><th>Wall area</th><th>Volume</th></tr></thead><tbody>
+    ${rows.map(x => `<tr><td>${esc(x.f.name)}</td><td>${x.n}</td><td>${fmtArea(x.a)}</td><td>${fmtArea(x.w)}</td><td>${fmtVol(x.v)}</td></tr>`).join("")}
+    <tr class="sum"><td>Whole house</td><td>${T.n}</td><td>${fmtArea(T.a)}</td><td>${fmtArea(T.w)}</td><td>${fmtVol(T.v)}</td></tr>
+    ${S.plan.rooms.some(isOut) ? `<tr><td>Garden and outdoor</td><td>${S.plan.rooms.filter(isOut).length}</td><td>${fmtArea(S.plan.rooms.filter(isOut).reduce((s, r) => s + area(r.pts), 0))}</td><td>–</td><td>–</td></tr>` : ""}</tbody></table></div>
+    <p class="note">Floor area is measured inside the walls. Wall area is the paintable area with doors and windows taken out.</p>
+  </div>
+  <div class="sec">
+    <h2>Flooring estimate</h2>
+    <div class="row"><label class="field" style="width:140px">Extra for waste<select id="waste">${[5, 10, 15].map(w => `<option value="${w}" ${(S.waste || 10) === w ? "selected" : ""}>${w}%</option>`).join("")}</select></label></div>
+    <div class="list">${S.plan.rooms.filter(r => !isOut(r)).sort((a, b) => S.plan.floors.findIndex(f => f.id === a.floor) - S.plan.floors.findIndex(f => f.id === b.floor)).map(r => `<div class="item"><span class="t"><span>${esc(r.name)}</span><small>${esc(floorOf(r).name)}</small></span><b class="num">${fmtArea(area(r.pts) * (1 + (S.waste || 10) / 100))}</b></div>`).join("")}</div>
+  </div>
+  <div class="sec"><h2>Outside size</h2>${rows.filter(x => x.fp).map(x => `<p class="num" style="margin:0">${esc(x.f.name)}: ${fmtLen(x.fp.w + S.plan.wallT)} × ${fmtLen(x.fp.h + S.plan.wallT)}</p>`).join("") || `<p class="note">Add rooms to see the footprint.</p>`}</div>`;
+  const ws = pane.querySelector("#waste"); if (ws) ws.onchange = () => { S.waste = +ws.value; renderTotals(); };
+}
+function renderPane() {
+  for (const [id, t] of [["tabRooms", "rooms"], ["tabRoom", "room"], ["tabTotals", "totals"]]) $("#" + id).setAttribute("aria-selected", S.tab === t);
+  if (S.tab === "rooms") renderRooms(); else if (S.tab === "room") renderRoom(); else renderTotals();
+}
+pane.addEventListener("click", e => {
+  const b = e.target.closest("[data-pick]"); if (!b) return;
+  const r = S.plan.rooms.find(x => x.id === b.dataset.pick); if (!r) return;
+  S.sel = r.id; S.floor = r.floor; S.tab = "room"; renderAll();
+});
+$("#tabRooms").onclick = () => { S.tab = "rooms"; renderPane(); };
+$("#tabRoom").onclick = () => { S.tab = "room"; renderPane(); };
+$("#tabTotals").onclick = () => { S.tab = "totals"; renderPane(); };
+
+function fixFloor() { if (!S.plan.floors.some(f => f.id === S.floor)) S.floor = S.plan.floors[0].id; }
+function renderTop() {
+  $("#houseName").textContent = S.plan.name || "My house";
+  const ins = S.plan.rooms.filter(r => !isOut(r)), n = ins.length, a = ins.reduce((s, r) => s + area(r.pts), 0);
+  $("#subline").textContent = `${S.plan.floors.length} floors · ${n} rooms · ${fmtArea(a)}`;
+  $("#floorTabs").innerHTML = S.plan.floors.map(f => `<button data-floor="${f.id}" aria-pressed="${f.id === S.floor}">${esc(f.name)}</button>`).join("");
+  $("#exampleBanner").hidden = !S.plan.example || !S.canWrite;
+  $("#undoBtn").disabled = !S.undo.length;
+  $("#addBar").hidden = S.view !== "2d" || !S.canWrite; $("#zoomBar").hidden = S.view !== "2d"; $("#hint").hidden = S.view !== "2d";
+  $("#bar3d").hidden = S.view !== "3d";
+  document.querySelectorAll("#layersPop [data-only]").forEach(el => el.hidden = el.dataset.only !== S.view);
+  document.querySelectorAll("#layersPop [data-ly]").forEach(el => el.checked = !!S.layers[el.dataset.ly]);
+  $("#emptyFloor").hidden = S.view !== "2d" || !S.canWrite || roomsOn(S.floor).length > 0;
+  $("#v2d").setAttribute("aria-pressed", S.view === "2d"); $("#v3d").setAttribute("aria-pressed", S.view === "3d");
+}
+$("#floorTabs").addEventListener("click", e => { const b = e.target.closest("[data-floor]"); if (!b) return; S.floor = b.dataset.floor; const r = selRoom(); if (r && r.floor !== S.floor) S.sel = null; renderAll(); });
+function renderAll() { fixFloor(); renderTop(); renderPlan(); renderPane(); if (S.view === "3d") schedule3D(); }
+
+/* ---------- 3D ---------- */
+const T3 = { inited: false, renderer: null, scene: null, camera: null, controls: null, group: null, timer: 0, fitted: false };
+function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim() || "#eeeeee"; }
+function labelSprite(text) {
+  const c = document.createElement("canvas"), x = c.getContext("2d"), fs = 44; x.font = `600 ${fs}px "IBM Plex Sans Condensed", sans-serif`;
+  const w = Math.ceil(x.measureText(text).width) + 28; c.width = w; c.height = fs + 22;
+  x.font = `600 ${fs}px "IBM Plex Sans Condensed", sans-serif`; x.fillStyle = "rgba(255,255,255,.88)"; x.beginPath();
+  if (x.roundRect) x.roundRect(0, 0, w, c.height, 12); else x.rect(0, 0, w, c.height); x.fill();
+  x.fillStyle = "#1A2220"; x.textBaseline = "middle"; x.fillText(text, 14, c.height / 2 + 2);
+  const tex = new THREE.CanvasTexture(c); tex.minFilter = THREE.LinearFilter;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, transparent: true }));
+  const h = 0.45; sp.scale.set(h * w / c.height, h, 1); sp.renderOrder = 10; sp.userData.label = true; return sp;
+}
+function build3D(opts) {
+  const group = new THREE.Group(); group.name = S.plan.name || "House";
+  const t = S.plan.wallT, cuts = computeCuts(S.plan);
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0xEDEAE4, roughness: 0.9 });
+  const L = opts.layers || S.layers;
+  const lawnMat = new THREE.MeshStandardMaterial({ color: 0x6A9455, roughness: 1 });
+  const itemMats = { app: new THREE.MeshStandardMaterial({ color: 0xE3E7E8, roughness: 0.4, metalness: 0.2 }), furn: new THREE.MeshStandardMaterial({ color: 0xB89A78, roughness: 0.8 }), gard: new THREE.MeshStandardMaterial({ color: 0x8C7A5E, roughness: 0.9 }) };
+  const special = { tv: 0x24292B, cooker: 0x3B4144, hob: 0x2A2E30, sofa: 0x6F8396, armchair: 0x6F8396, bed: 0xD9DEE6, bedsingle: 0xD9DEE6, bath: 0xF6F6F3, toilet: 0xF6F6F3, sink: 0xF6F6F3, shower: 0xCFE3EA, car: 0x4B6584, trampoline: 0x2F3A40, greenhouse: 0xCFE3D8, shed: 0x8A6A4A, planter: 0x6B5038, bush: 0x4E7A3A, bins: 0x3A5A40, radiator: 0xF2F2F0 };
+  const specMats = {}; const matFor = it => special[it.type] ? (specMats[it.type] ||= new THREE.MeshStandardMaterial({ color: special[it.type], roughness: 0.7, transparent: it.type === "greenhouse" || it.type === "shower", opacity: (it.type === "greenhouse" || it.type === "shower") ? 0.45 : 1 })) : itemMats[itemLayer(it)];
+  const glassMat = new THREE.MeshStandardMaterial({ color: 0x9cc7dd, transparent: true, opacity: 0.35, roughness: 0.1 });
+  const floorMats = PALETTE_LIGHT.map(c => new THREE.MeshStandardMaterial({ color: new THREE.Color(c).multiplyScalar(0.92), roughness: 0.95 }));
+  S.plan.floors.forEach((f, fi) => {
+    if (opts.mode === "current" && f.id !== S.floor) return;
+    const fg = new THREE.Group(); fg.name = f.name;
+    const elev = floorElev(f.id) + (opts.mode === "explode" ? fi * 3.2 : 0), slab = fi === 0 ? 0.06 : (S.plan.floors[fi - 1].slab ?? 0.25);
+    for (const r of roomsOn(f.id)) {
+      if (isOut(r) && !L.garden) continue;
+      const rg = new THREE.Group(); rg.name = r.name;
+      const addItems = () => { for (const it of r.items || []) {
+        if (!layerOn(L, it)) continue;
+        const fr = itemFrame(r, it), ang = Math.atan2(-fr.e.d[1], fr.e.d[0]);
+        if (it.type === "tree") {
+          const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, it.h * 0.45, 10), itemMats.gard); trunk.position.set(fr.c[0], elev + it.h * 0.225, fr.c[1]); trunk.name = it.label + " trunk"; rg.add(trunk);
+          const crown = new THREE.Mesh(new THREE.SphereGeometry(Math.min(it.w, it.d) / 2, 16, 12), specMats.leaf ||= new THREE.MeshStandardMaterial({ color: 0x4F7F3A, roughness: 0.9 }));
+          crown.position.set(fr.c[0], elev + it.h * 0.45 + Math.min(it.w, it.d) / 2 * 0.8, fr.c[1]); crown.name = it.label; rg.add(crown); continue;
+        }
+        const m = it.type === "bush" ? new THREE.Mesh(new THREE.SphereGeometry(Math.min(it.w, it.d) / 2, 14, 10), matFor(it)) : new THREE.Mesh(new THREE.BoxGeometry(it.w, it.h, it.d), matFor(it));
+        m.position.set(fr.c[0], elev + (it.z || 0) + (it.type === "bush" ? Math.min(it.w, it.d) / 2 : it.h / 2), fr.c[1]); m.rotation.y = ang; m.name = it.label; rg.add(m);
+      } };
+      if (isOut(r)) {
+        const lshape = new THREE.Shape(r.pts.map(p => new THREE.Vector2(p[0], -p[1])));
+        const lg = new THREE.ExtrudeGeometry(lshape, { depth: 0.04, bevelEnabled: false }); lg.rotateX(-Math.PI / 2);
+        const lawn = new THREE.Mesh(lg, lawnMat); lawn.position.y = elev - 0.08; lawn.name = r.name; rg.add(lawn);
+        addItems();
+        if (opts.labels) { const c = centroid(r.pts), sp = labelSprite(r.name); sp.position.set(c[0], elev + 0.6, c[1]); rg.add(sp); }
+        fg.add(rg); continue;
+      }
+      addItems();
+      const shape = new THREE.Shape(r.pts.map(p => new THREE.Vector2(p[0], -p[1])));
+      const fgeo = new THREE.ExtrudeGeometry(shape, { depth: slab, bevelEnabled: false }); fgeo.rotateX(-Math.PI / 2);
+      const fm = new THREE.Mesh(fgeo, floorMats[r.c % 7]); fm.position.y = elev - slab; fm.name = r.name + " floor"; rg.add(fm);
+      const h = roomH(r), names = wallNames(r);
+      edges(r).forEach(e => {
+        const list = (cuts[r.id][e.i] || []).slice().sort((a, b) => a.s - b.s);
+        const pieces = []; let cur = 0;
+        for (const c of list) {
+          if (c.s > cur) pieces.push([cur, c.s, 0, h]);
+          if (c.sill > 0) pieces.push([c.s, c.e, 0, c.sill]);
+          if (c.top < h) pieces.push([c.s, c.e, Math.min(c.top, h), h]);
+          cur = Math.max(cur, c.e);
+          if (c.type === "window" && c.own) {
+            const g = new THREE.Mesh(new THREE.BoxGeometry(c.e - c.s, Math.min(c.top, h) - c.sill, 0.015), glassMat);
+            const mid = (c.s + c.e) / 2; g.position.set(e.a[0] + e.d[0] * mid, elev + (c.sill + Math.min(c.top, h)) / 2, e.a[1] + e.d[1] * mid);
+            g.rotation.y = Math.atan2(-e.d[1], e.d[0]); g.name = r.name + " window"; rg.add(g);
+          }
+        }
+        if (cur < e.len) pieces.push([cur, e.len, 0, h]);
+        for (const [s, en, y0, y1] of pieces) {
+          if (en - s < 0.005 || y1 - y0 < 0.005) continue;
+          const m = new THREE.Mesh(new THREE.BoxGeometry(en - s, y1 - y0, t / 2), wallMat);
+          const mid = (s + en) / 2;
+          m.position.set(e.a[0] + e.d[0] * mid + e.n[0] * t / 4, elev + (y0 + y1) / 2, e.a[1] + e.d[1] * mid + e.n[1] * t / 4);
+          m.rotation.y = Math.atan2(-e.d[1], e.d[0]); m.name = `${r.name} ${names[e.i]}`; rg.add(m);
+        }
+      });
+      if (L.photos && opts.photos !== false) {
+        const es = edges(r), done = {};
+        for (const p of r.photos) {
+          if (p.wall == null || done[p.wall] || !es[p.wall] || !photoURL(p)) continue; done[p.wall] = 1;
+          const e = es[p.wall], tex = photoTexture(p, e.len / h);
+          const pl = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(0.1, e.len - t), h - 0.02), new THREE.MeshBasicMaterial({ map: tex }));
+          pl.position.set((e.a[0] + e.b[0]) / 2 + e.n[0] * (t / 2 + 0.01), elev + h / 2, (e.a[1] + e.b[1]) / 2 + e.n[1] * (t / 2 + 0.01));
+          pl.rotation.y = Math.atan2(e.n[0], e.n[1]); pl.name = r.name + " photo"; rg.add(pl);
+        }
+      }
+      if (opts.labels) { const c = centroid(r.pts), sp = labelSprite(r.name); sp.position.set(c[0], elev + h + 0.35, c[1]); rg.add(sp); }
+      fg.add(rg);
+    }
+    group.add(fg);
+  });
+  return group;
+}
+/* a photo fitted to a wall: centre-cropped to the wall's shape, loaded once and reused */
+function photoTexture(p, aspect) {
+  T3.tex ||= new Map();
+  const key = p.id + ":" + aspect.toFixed(2);
+  if (T3.tex.has(key)) return T3.tex.get(key);
+  const W = 1024, H = Math.max(64, Math.round(W / Math.max(0.3, Math.min(aspect, 8))));
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const x = c.getContext("2d"); x.fillStyle = "#cfd6d3"; x.fillRect(0, 0, W, H);
+  const tex = new THREE.CanvasTexture(c); tex.keepAlive = true; T3.tex.set(key, tex);
+  const img = new Image();
+  img.onload = () => {
+    const ia = img.naturalWidth / img.naturalHeight, ta = W / H;
+    let sw = img.naturalWidth, sh = img.naturalHeight, sx = 0, sy = 0;
+    if (ia > ta) { sw = sh * ta; sx = (img.naturalWidth - sw) / 2; } else { sh = sw / ta; sy = (img.naturalHeight - sh) / 2; }
+    x.drawImage(img, sx, sy, sw, sh, 0, 0, W, H); tex.needsUpdate = true;
+  };
+  img.src = photoURL(p);
+  return tex;
+}
+function init3D() {
+  if (T3.inited) return true;
+  if (!window.THREE || !THREE.OrbitControls) { toast("The 3D viewer couldn't load. Check your connection and reload."); return false; }
+  const host = $("#three");
+  T3.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  T3.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  host.appendChild(T3.renderer.domElement);
+  T3.scene = new THREE.Scene();
+  T3.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 500);
+  T3.controls = new THREE.OrbitControls(T3.camera, T3.renderer.domElement);
+  T3.controls.enableDamping = true; T3.controls.dampingFactor = 0.12; T3.controls.screenSpacePanning = true; T3.controls.maxPolarAngle = Math.PI * 0.495;
+  T3.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8f8c, 0.85));
+  const d = new THREE.DirectionalLight(0xffffff, 0.55); d.position.set(12, 24, 9); T3.scene.add(d);
+  const d2 = new THREE.DirectionalLight(0xffffff, 0.2); d2.position.set(-10, 8, -12); T3.scene.add(d2);
+  T3.grid = new THREE.GridHelper(80, 80, 0x9aa6a1, 0xc5ceca); T3.grid.position.y = -0.07; T3.scene.add(T3.grid);
+  new ResizeObserver(size3D).observe(host);
+  T3.inited = true; size3D();
+  const loop = () => { requestAnimationFrame(loop); if (S.view === "3d") { T3.controls.update(); T3.renderer.render(T3.scene, T3.camera); } };
+  loop();
+  return true;
+}
+function size3D() { if (!T3.renderer) return; const h = $("#three"), w = h.clientWidth || 1, hh = h.clientHeight || 1; T3.renderer.setSize(w, hh, false); T3.camera.aspect = w / hh; T3.camera.updateProjectionMatrix(); }
+function schedule3D() { clearTimeout(T3.timer); T3.timer = setTimeout(rebuild3D, 60); }
+function rebuild3D() {
+  if (!init3D()) return;
+  if (T3.group) { T3.scene.remove(T3.group); T3.group.traverse(o => { o.geometry && o.geometry.dispose(); if (o.material && o.material.map && !o.material.map.keepAlive) o.material.map.dispose(); }); }
+  T3.scene.background = new THREE.Color(cssVar("--paper"));
+  T3.group = build3D({ mode: $("#floors3d").value, labels: S.layers.labels });
+  T3.scene.add(T3.group);
+  if (!T3.fitted) { fit3D(); T3.fitted = true; }
+}
+function fit3D(top) {
+  const b = new THREE.Box3().setFromObject(T3.group); if (b.isEmpty()) { T3.camera.position.set(10, 12, 14); T3.controls.target.set(0, 0, 0); return; }
+  const c = b.getCenter(new THREE.Vector3()), s = b.getSize(new THREE.Vector3()), R = Math.max(s.x, s.z, s.y * 2) * 1.1 + 2;
+  T3.controls.target.copy(c);
+  if (top) T3.camera.position.set(c.x, c.y + R * 1.6, c.z + 0.01); else T3.camera.position.set(c.x + R * 0.75, c.y + R * 0.9, c.z + R * 1.05);
+  T3.camera.updateProjectionMatrix(); T3.controls.update();
+}
+function setView(v) { S.view = v; $("#plan").hidden = v !== "2d"; $("#three").hidden = v !== "3d"; renderAll(); if (v === "3d") { requestAnimationFrame(() => { size3D(); rebuild3D(); }); } }
+$("#v2d").onclick = () => setView("2d");
+$("#v3d").onclick = () => setView("3d");
+$("#floors3d").onchange = () => { rebuild3D(); fit3D(); };
+$("#reset3d").onclick = () => fit3D();
+$("#top3d").onclick = () => fit3D(true);
+
+/* ---------- modals ---------- */
+function modal(title, bodyHTML, wide) {
+  const root = $("#modalRoot");
+  root.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="dlg ${wide ? "wide" : ""}"><header><h3>${esc(title)}</h3><button class="xbtn" aria-label="Close" id="mClose">×</button></header><div class="body">${bodyHTML}</div></div></div>`;
+  const close = () => { root.innerHTML = ""; document.removeEventListener("keydown", esck); };
+  const esck = e => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", esck);
+  root.querySelector("#mClose").onclick = close;
+  root.querySelector(".modal").addEventListener("click", e => { if (e.target.classList.contains("modal")) close(); });
+  return { el: root.querySelector(".body"), close };
+}
+
+/* measure in a photo: set a reference of known size, then measure along the same surface */
+const REFS = [["Interior door width", 0.81, `2' 8"`], ["Interior door height", 2.03, `6' 8"`], ["A4 sheet, long side", 0.297, ""], ["US letter, long side", 0.2794, `11"`], ["Brick length", 0.215, ""]];
+function openMeasure(roomId, photoId) {
+  const room = S.plan.rooms.find(r => r.id === roomId), p = room && room.photos.find(x => x.id === photoId); if (!p) return;
+  const url = photoURL(p); if (!url) return;
+  const names = wallNames(room);
+  const M = p.measure ? clone(p.measure) : { ref: [], refLen: null, lines: [] };
+  const ro = !S.canWrite;
+  const m = modal("Measure in photo", `
+    <div class="steps"><span class="step" id="st1">1. Mark something you know the size of</span><span class="step" id="st2">2. Measure along the same wall</span></div>
+    <div class="mcanvas-wrap"><canvas id="mc"></canvas></div>
+    <div class="row" id="refRow">
+      <label class="field grow">Known length<input class="num" id="refLen" placeholder="${S.plan.units === "ft" ? `e.g. 2' 8"` : "e.g. 0.81"}" value="${M.refLen ? esc(fmtIn(M.refLen)) : ""}"></label>
+      <label class="field grow">Or pick a standard size<select id="refPick"><option value="">Choose…</option>${REFS.map((r, i) => `<option value="${i}">${r[0]} (${S.plan.units === "ft" && r[2] ? r[2] : r[1] + " m"})</option>`).join("")}</select></label>
+    </div>
+    <div id="mLines"></div>
+    <div class="row"><button class="btn" id="mUndo">Remove last point</button><button class="btn" id="mClear">Start over</button><span class="grow"></span>${ro ? "" : `<button class="btn primary" id="mSave">Save marks</button>`}</div>
+    <p class="note">Tap two points on each end. Drag a point to fine-tune it. Measurements are only accurate on the same flat surface as the reference, in a photo taken straight on. A tape-measured length is always better than this.</p>`, true);
+  const cv = m.el.querySelector("#mc"), ctx = cv.getContext("2d"), img = new Image();
+  img.onload = () => { cv.width = img.naturalWidth; cv.height = img.naturalHeight; draw(); };
+  img.src = url;
+  const pending = () => M.ref.length < 2 ? "ref" : "line";
+  const scale = () => (M.ref.length === 2 && M.refLen) ? M.refLen / Math.hypot(M.ref[1][0] - M.ref[0][0], M.ref[1][1] - M.ref[0][1]) : null;
+  function draw() {
+    if (!img.naturalWidth) return;
+    const lw = Math.max(2, cv.width / 400);
+    ctx.drawImage(img, 0, 0);
+    const seg = (a, b, col, label) => {
+      ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(a[0], a[1]); if (b) ctx.lineTo(b[0], b[1]); ctx.stroke();
+      for (const q of [a, b]) if (q) { ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(q[0], q[1], lw * 3.5, 0, 7); ctx.fill(); ctx.strokeStyle = col; ctx.stroke(); }
+      if (b && label) { const fs = Math.max(14, cv.width / 45); ctx.font = `600 ${fs}px sans-serif`; const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2, w = ctx.measureText(label).width + fs * 0.6; ctx.fillStyle = col; ctx.fillRect(mx - w / 2, my - fs * 0.75, w, fs * 1.5); ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(label, mx, my); }
+    };
+    if (M.ref.length) seg(M.ref[0], M.ref[1], "#E07B12", M.refLen ? "ref " + fmtLen(M.refLen) : "reference");
+    const sc = scale();
+    M.lines.forEach((l, i) => seg(l[0], l[1], "#1D8A63", l[1] && sc ? `${i + 1}: ${fmtLen(Math.hypot(l[1][0] - l[0][0], l[1][1] - l[0][1]) * sc)}` : String(i + 1)));
+    m.el.querySelector("#st1").classList.toggle("on", pending() === "ref" || !M.refLen);
+    m.el.querySelector("#st2").classList.toggle("on", pending() === "line" && !!M.refLen);
+    renderLines();
+  }
+  function renderLines() {
+    const sc = scale(), box = m.el.querySelector("#mLines");
+    const done = M.lines.filter(l => l[1]);
+    if (!sc || !done.length) { box.innerHTML = sc ? `<p class="note">Now tap both ends of a wall, window or anything else on the same surface.</p>` : ""; return; }
+    box.innerHTML = `<div class="list">${done.map((l, i) => {
+      const v = Math.hypot(l[1][0] - l[0][0], l[1][1] - l[0][1]) * sc;
+      return `<div class="item"><b class="num">${i + 1}: ${fmtLen(v)}</b><span class="grow"></span>${ro ? "" : `<select class="inp" style="width:auto" data-apply-to="${i}"><option value="">Use as…</option>${names.map((n, j) => `<option value="w${j}">${n} length</option>`).join("")}<option value="h">Ceiling height</option></select>`}</div>`;
+    }).join("")}</div>`;
+    box.querySelectorAll("[data-apply-to]").forEach(s => s.onchange = () => {
+      if (!s.value) return; const l = done[+s.dataset.applyTo], v = Math.round(Math.hypot(l[1][0] - l[0][0], l[1][1] - l[0][1]) * sc * 100) / 100;
+      edit(() => {
+        const rr = S.plan.rooms.find(r => r.id === roomId);
+        if (s.value === "h") rr.height = v; else { const j = +s.value.slice(1); if (setEdgeLength(rr, j, v)) { rr.measured[j] = true; rr.openings.forEach(o => clampOpening(rr, o)); } else toast("That length doesn't fit this room's shape."); }
+        const ph = rr.photos.find(x => x.id === photoId); if (ph) ph.measure = clone(M);
+      });
+      toast(`Set to ${fmtLen(v)}`); s.value = "";
+    });
+  }
+  const at = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
+  let dragPt = null;
+  cv.addEventListener("pointerdown", e => {
+    e.preventDefault(); const q = at(e), r = cv.getBoundingClientRect(), tol = 22 * cv.width / r.width;
+    const all = [...M.ref.map((pt, i) => ({ arr: M.ref, i })), ...M.lines.flatMap(l => l.map((pt, i) => ({ arr: l, i })))].filter(o => o.arr[o.i]);
+    const hit = all.find(o => Math.hypot(o.arr[o.i][0] - q[0], o.arr[o.i][1] - q[1]) < tol);
+    if (hit) { dragPt = hit; cv.setPointerCapture(e.pointerId); return; }
+    if (pending() === "ref") M.ref.push(q);
+    else { const last = M.lines[M.lines.length - 1]; if (last && !last[1]) last[1] = q; else M.lines.push([q]); }
+    draw();
+  });
+  cv.addEventListener("pointermove", e => { if (!dragPt) return; dragPt.arr[dragPt.i] = at(e); draw(); });
+  cv.addEventListener("pointerup", () => dragPt = null);
+  m.el.querySelector("#refLen").onchange = e => { const v = parseLen(e.target.value); M.refLen = v && v > 0 ? v : null; draw(); };
+  m.el.querySelector("#refPick").onchange = e => { const r = REFS[+e.target.value]; if (!r) return; M.refLen = r[1]; m.el.querySelector("#refLen").value = fmtIn(r[1]); draw(); };
+  m.el.querySelector("#mUndo").onclick = () => { const last = M.lines[M.lines.length - 1]; if (last) { if (last[1]) last.pop(); else M.lines.pop(); } else M.ref.pop(); draw(); };
+  m.el.querySelector("#mClear").onclick = () => { M.ref = []; M.lines = []; draw(); };
+  const sv = m.el.querySelector("#mSave"); if (sv) sv.onclick = () => { edit(() => { const rr = S.plan.rooms.find(r => r.id === roomId), ph = rr && rr.photos.find(x => x.id === photoId); if (ph) ph.measure = clone(M); }); m.close(); toast("Marks saved with the photo"); };
+}
+
+function openPhotoViewer(roomId, photoId) {
+  const r = S.plan.rooms.find(x => x.id === roomId), p = r && r.photos.find(x => x.id === photoId); if (!p) return;
+  const u = photoURL(p), names = wallNames(r);
+  const m = modal(`${r.name} · ${p.wall != null ? names[p.wall] : "Photo"}`, `<div class="viewer">${u ? `<img src="${esc(u)}" alt="${esc(p.name)}">` : `<div class="empty">This photo is stored on another device.</div>`}</div>
+    <div class="row"><button class="btn" id="pvMeasure" ${u ? "" : "disabled"}>Measure in this photo</button><button class="btn" id="pvRoom">Open ${esc(r.name)}</button></div>`, true);
+  m.el.querySelector("#pvMeasure").onclick = () => { m.close(); openMeasure(roomId, photoId); };
+  m.el.querySelector("#pvRoom").onclick = () => { m.close(); S.sel = roomId; S.floor = r.floor; S.tab = "room"; renderAll(); };
+}
+
+/* ask Claude to estimate the room from its photos */
+async function estimateRoom(roomId, mode = {}) {
+  const room = S.plan.rooms.find(r => r.id === roomId); if (!room || !store.sample) return;
+  const m = modal(mode.itemsOnly ? "Find appliances and furniture" : "Estimate with Claude", `<p id="aiStatus">Preparing photos…</p><div id="aiOut"></div>`);
+  const status = m.el.querySelector("#aiStatus"), out = m.el.querySelector("#aiOut");
+  try {
+    const lim = await store.sample.limits().catch(() => null);
+    if (!lim || !lim.images) { status.textContent = "Sending photos to Claude isn't available here. Use Measure on a photo instead."; return; }
+    const names = wallNames(room), es = edges(room);
+    const ordered = room.photos.slice().sort((a, b) => (a.wall == null) - (b.wall == null)).slice(0, lim.images.maxCount);
+    const blobs = [];
+    for (const p of ordered) { try { blobs.push((await downscale(await photoBlob(p), 1568, 0.85)).blob); } catch { } }
+    if (!blobs.length) { status.textContent = "The photos couldn't be loaded on this device."; return; }
+    const u = S.plan.units === "ft" ? "Answer in metres even though the user works in feet." : "";
+    const prompt = `You are helping someone draw an accurate floor plan of their house from phone photos.
+${isOut(room) ? "Outdoor area (garden, patio or similar)" : "Room"}: "${room.name}" on the ${floorOf(room).name}. Seen from above with north at the top, its outline is a right-angled polygon. Walls in clockwise order:
+${es.map((e, i) => `- wall ${i}: ${names[i]}, currently ${e.len.toFixed(2)} m (${room.measured[i] ? "MEASURED with a tape, treat as correct" : "rough guess"})`).join("\n")}
+Ceiling height: currently ${roomH(room).toFixed(2)} m (${room.height ? "set by the user" : "default guess"}).
+Existing doors and windows: ${room.openings.length ? room.openings.map(o => `${o.type} on wall ${o.edge}, ${o.offset.toFixed(2)} m from the wall's start, ${o.width.toFixed(2)} m wide`).join("; ") : "none recorded"}.
+Photos, in order: ${ordered.slice(0, blobs.length).map((p, i) => `photo ${i + 1} ${p.wall != null ? `shows wall ${p.wall} (${names[p.wall]})` : "wall not tagged"}`).join("; ")}.
+Use measured lengths first, then common objects of standard size as scale references (interior doors about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high, light switches about 1.2 m from the floor, sockets about 0.3 m, floor tiles and boards of standard sizes). Estimate the length of each wall you can see well, the ceiling height, and the doors and windows you can see. ${u}
+${ITEM_PROMPT}
+Reply with JSON only, in this shape:
+{"walls":[{"wall":0,"length_m":4.2,"confidence":"low|medium|high","basis":"short reason"}],"ceiling_height_m":2.4,"openings":[{"type":"door|window","wall":0,"offset_m":0.5,"width_m":0.8,"height_m":2.0,"sill_m":0}],${ITEM_JSON},"notes":"one or two sentences on which extra photo or measurement would most improve this"}
+Leave out any wall you cannot judge. offset_m is measured along the wall from its start corner going clockwise. Do not invent openings you cannot see.`;
+    status.textContent = `Claude is looking at ${blobs.length} photo${blobs.length > 1 ? "s" : ""}. This can take up to a minute…`;
+    const res = await store.sample.json(prompt, { images: blobs, modelTier: "complex" });
+    showSuggestions(room.id, res, m, status, out, mode);
+  } catch (e) {
+    const c = e && e.code;
+    status.textContent = c === "not_granted" ? "Claude wasn't allowed to look at the photos, so nothing was sent." : c === "rate_limited" ? "Too many requests just now. Try again in a minute." : c === "invalid_json" ? "Claude's answer couldn't be read. Try again, or add a clearer photo." : (e && e.message && e.code && !/^(unavailable|upstream_error)$/.test(c)) ? e.message : "Something went wrong asking Claude. Try again.";
+  }
+}
+function showSuggestions(roomId, res, m, status, out, mode = {}) {
+  const room = S.plan.rooms.find(r => r.id === roomId); if (!room) return;
+  const names = wallNames(room), es = edges(room);
+  const walls = (Array.isArray(res && res.walls) ? res.walls : []).filter(w => es[w.wall] && w.length_m > 0.3 && w.length_m < 40);
+  const ops = (Array.isArray(res && res.openings) ? res.openings : []).filter(o => es[o.wall] && o.width_m > 0.2 && (o.type === "door" || o.type === "window"));
+  const hh = !isOut(room) && res && res.ceiling_height_m > 1.8 && res.ceiling_height_m < 6 ? res.ceiling_height_m : null;
+  const items = parseItems(res && res.items, es.length), io = !!mode.itemsOnly;
+  status.textContent = "Here's what Claude estimated. Tick what you want to use.";
+  out.innerHTML = `<div class="sec">
+    ${walls.map((w, i) => `<label class="sugg"><input type="checkbox" data-sw="${i}" ${room.measured[w.wall] || io ? "" : "checked"}><span><b>${names[w.wall]}: ${fmtLen(w.length_m)}</b> <span class="chip">${esc(w.confidence || "")}</span><br><small class="muted">Now ${fmtLen(es[w.wall].len)}${room.measured[w.wall] ? ", which you measured" : ""}. ${esc(w.basis || "")}</small></span></label>`).join("")}
+    ${hh ? `<label class="sugg"><input type="checkbox" id="sh" ${room.height || io ? "" : "checked"}><span><b>Ceiling height: ${fmtLen(hh)}</b><br><small class="muted">Now ${fmtLen(roomH(room))}</small></span></label>` : ""}
+    ${ops.length ? `<label class="sugg"><input type="checkbox" id="so" ${room.openings.length || io ? "" : "checked"}><span><b>${ops.length} door${ops.length > 1 ? "s and windows" : " or window"}</b><br><small class="muted">${ops.map(o => `${o.type} on ${names[o.wall]}, ${fmtLen(o.width_m)} wide`).join("; ")}. Replaces the ${room.openings.length} already on this room.</small></span></label>` : ""}
+    ${items.length ? `<label class="sugg"><input type="checkbox" id="si" checked><span><b>${items.length} appliance${items.length > 1 ? "s and furniture" : " or piece of furniture"}</b><br><small class="muted">${esc(items.map(x => x.label).join(", "))}. Added to the ${room.items.length} already on this room.</small></span></label>` : (io ? `<div class="empty">Claude didn't find any appliances or furniture it could place.</div>` : "")}
+    ${!walls.length && !hh && !ops.length && !items.length ? `<div class="empty">Claude couldn't estimate anything reliable from these photos.</div>` : ""}
+    ${res && res.notes ? `<p class="note"><b>Tip from Claude:</b> ${esc(res.notes)}</p>` : ""}
+    <div class="row"><button class="btn primary" id="sApply">Apply selected</button><button class="btn" id="sCancel">Cancel</button></div>
+    <p class="note">Estimates from photos are approximate. Applied lengths still show as guesses until you measure them.</p></div>`;
+  out.querySelector("#sCancel").onclick = m.close;
+  out.querySelector("#sApply").onclick = () => {
+    edit(() => {
+      const rr = S.plan.rooms.find(r => r.id === roomId); if (!rr) return;
+      const rect4 = rr.pts.length === 4;
+      const chosen = walls.filter((w, i) => out.querySelector(`[data-sw="${i}"]`)?.checked);
+      if (rect4) {
+        for (const ax of [0, 1]) { const vs = chosen.filter(w => w.wall % 2 === ax).map(w => w.length_m); if (vs.length) setEdgeLength(rr, ax, vs.reduce((a, b) => a + b) / vs.length); }
+      } else chosen.forEach(w => setEdgeLength(rr, w.wall, w.length_m));
+      if (hh && out.querySelector("#sh")?.checked) rr.height = Math.round(hh * 100) / 100;
+      if (ops.length && out.querySelector("#so")?.checked) {
+        rr.openings = ops.map(o => o.type === "door" ? door(o.wall, o.offset_m || 0.2, o.width_m, { height: o.height_m || 2.03 }) : win(o.wall, o.offset_m || 0.2, o.width_m, { height: o.height_m || 1.2, sill: o.sill_m ?? 0.9 }));
+      }
+      rr.openings.forEach(o => clampOpening(rr, o));
+      if (items.length && out.querySelector("#si")?.checked) { items.forEach(it => clampItem(rr, it)); rr.items.push(...items); }
+      rr.items.forEach(it => clampItem(rr, it));
+    });
+    m.close(); toast("Applied. Undo reverts it.");
+  };
+}
+
+/* ---------- build a room from its photos ---------- */
+const HEAD = [[1, 0], [0, 1], [-1, 0], [0, -1]]; // east, south, west, north (y down)
+function polyFromWalls(walls) {
+  if (!Array.isArray(walls) || walls.length < 4 || walls.length > 12) return null;
+  const turns = walls.map(w => String(w.turn || "R").toUpperCase().startsWith("L") ? -1 : 1);
+  if (turns.reduce((a, b) => a + b, 0) !== 4) return null;
+  const lens = walls.map(w => Math.max(0.3, Math.min(40, +w.length_m || 0)));
+  const heads = []; let h = 0; for (let i = 0; i < lens.length; i++) { heads.push(h); h = (h + turns[i] + 4) % 4; }
+  const walk = () => { const p = [[0, 0]]; for (let i = 0; i < lens.length - 1; i++) { const [x, y] = p[p.length - 1]; p.push([x + HEAD[heads[i]][0] * lens[i], y + HEAD[heads[i]][1] * lens[i]]); } return p; };
+  // close the outline by adjusting the last east-west and north-south walls
+  const end = () => { const p = walk(), [x, y] = p[p.length - 1], i = lens.length - 1; return [x + HEAD[heads[i]][0] * lens[i], y + HEAD[heads[i]][1] * lens[i]]; };
+  let [ex, ey] = end();
+  for (let i = lens.length - 1; i >= 0 && Math.abs(ex) > 1e-6; i--) if (heads[i] % 2 === 0) { lens[i] -= ex * HEAD[heads[i]][0]; break; }
+  for (let i = lens.length - 1; i >= 0 && Math.abs(ey) > 1e-6; i--) if (heads[i] % 2 === 1) { lens[i] -= ey * HEAD[heads[i]][1]; break; }
+  [ex, ey] = end();
+  if (Math.hypot(ex, ey) > 0.01 || lens.some(l => l < 0.3)) return null;
+  const pts = walk().map(p => [r2(p[0]), r2(p[1])]);
+  return shoelace(pts) > 0 ? pts : null;
+}
+function rotateRoom(room) {
+  const b = bbox(room.pts), cx = Math.round((b.x0 + b.w / 2) * 20) / 20, cy = Math.round((b.y0 + b.h / 2) * 20) / 20;
+  room.pts = room.pts.map(([x, y]) => [r2(cx - (y - cy)), r2(cy + (x - cx))]);
+}
+function flipRoom(room) {
+  const b = bbox(room.pts), cx = b.x0 + b.w / 2, n = room.pts.length, old = edges(room);
+  room.pts = room.pts.map(([x, y]) => [r2(2 * cx - x), y]).reverse();
+  const map = i => (2 * n - 2 - i) % n;
+  room.openings.forEach(o => { const L = old[o.edge].len; o.edge = map(o.edge); o.offset = r2(L - o.offset - o.width); if (o.type === "door") o.hinge = o.hinge === "end" ? "start" : "end"; });
+  room.photos.forEach(p => { if (p.wall != null) p.wall = map(p.wall); });
+  (room.items || []).forEach(it => { const L = old[it.wall] ? old[it.wall].len : 0; it.wall = map(it.wall); it.along = r2(Math.max(0, L - it.along - it.w)); });
+  const m = {}; Object.keys(room.measured).forEach(k => { if (room.measured[k]) m[map(+k)] = true; }); room.measured = m;
+}
+function translateRoom(room, dx, dy) { room.pts = room.pts.map(([x, y]) => [r2(x + dx), r2(y + dy)]); }
+function overlapArea(a, b) {
+  const A = bbox(a.pts), B = bbox(b.pts), x0 = Math.max(A.x0, B.x0), x1 = Math.min(A.x1, B.x1), y0 = Math.max(A.y0, B.y0), y1 = Math.min(A.y1, B.y1);
+  if (x1 - x0 < 0.05 || y1 - y0 < 0.05) return 0;
+  let n = 0; const st = 0.1;
+  for (let x = x0 + st / 2; x < x1; x += st) for (let y = y0 + st / 2; y < y1; y += st) if (pip([x, y], a.pts) && pip([x, y], b.pts)) n++;
+  return n * st * st;
+}
+const sameName = (a, b) => { a = String(a || "").toLowerCase().trim(); b = String(b || "").toLowerCase().trim(); return !!a && !!b && (a === b || (a.length > 2 && b.includes(a)) || (b.length > 2 && a.includes(b))); };
+/* put a new room against the room it connects to, turning it so the connecting walls meet */
+function placeRoom(r, nb) {
+  const others = roomsOn(r.floor).filter(x => x.id !== r.id);
+  const b0 = bbox(r.pts);
+  if (!others.length) { translateRoom(r, -b0.x0, -b0.y0); return null; }
+  if (!nb) {
+    const fb = bbox(others.flatMap(x => x.pts)); translateRoom(r, fb.x1 - b0.x0 + 0.5, fb.y0 - b0.y0); return null;
+  }
+  const recip = nb.openings.find(o => o.type === "door" && sameName(o.leadsTo, r.name));
+  const myDoor = r.openings.find(o => o.type === "door" && sameName(o.leadsTo, nb.name));
+  const nbEdges = edges(nb).filter(f => f.len >= 0.8 && (Math.abs(f.n[0]) > 0.99 || Math.abs(f.n[1]) > 0.99));
+  const sides = recip ? [edges(nb)[recip.edge], ...nbEdges.filter(f => f.i !== recip.edge)] : nbEdges;
+  let best = null;
+  for (const f of sides) {
+    for (let q = 0; q < 4; q++) {
+      const rr = clone(r); for (let k = 0; k < q; k++) rotateRoom(rr);
+      const es = edges(rr);
+      let w = myDoor && Math.abs(es[myDoor.edge].n[0] + f.n[0]) < 0.01 && Math.abs(es[myDoor.edge].n[1] + f.n[1]) < 0.01 ? myDoor.edge : null;
+      if (myDoor && w == null) continue;
+      if (w == null) { const c = es.filter(e => Math.abs(e.n[0] + f.n[0]) < 0.01 && Math.abs(e.n[1] + f.n[1]) < 0.01).sort((a, b) => b.len - a.len)[0]; if (!c) continue; w = c.i; }
+      const e = es[w];
+      const nShift = (f.a[0] - e.a[0]) * f.n[0] + (f.a[1] - e.a[1]) * f.n[1];
+      let along;
+      const useDoors = recip && f.i === recip.edge && myDoor;
+      if (useDoors) {
+        const Cn = [f.a[0] + f.d[0] * (recip.offset + recip.width / 2), f.a[1] + f.d[1] * (recip.offset + recip.width / 2)];
+        const Cr = [e.a[0] + e.d[0] * (myDoor.offset + myDoor.width / 2), e.a[1] + e.d[1] * (myDoor.offset + myDoor.width / 2)];
+        along = (Cn[0] - Cr[0]) * f.d[0] + (Cn[1] - Cr[1]) * f.d[1];
+      } else along = (f.a[0] - e.b[0]) * f.d[0] + (f.a[1] - e.b[1]) * f.d[1];
+      translateRoom(rr, f.n[0] * nShift + f.d[0] * along, f.n[1] * nShift + f.d[1] * along);
+      const ov = others.reduce((s, o) => s + overlapArea(rr, o), 0) + (f === sides[0] && recip ? 0 : 0.01) + q * 0.001;
+      if (!best || ov < best.ov) best = { ov, pts: rr.pts, q, rr, dropMine: useDoors };
+    }
+    if (best && best.ov < 0.05) break;
+  }
+  if (!best) { const fb = bbox(others.flatMap(x => x.pts)); translateRoom(r, fb.x1 - b0.x0 + 0.5, fb.y0 - b0.y0); return null; }
+  r.pts = best.rr.pts; r.openings = best.rr.openings; r.photos = best.rr.photos; r.measured = best.rr.measured; r.items = best.rr.items;
+  if (best.dropMine) r.openings = r.openings.filter(o => o.id !== myDoor.id); // the neighbour's door already opens this wall
+  return nb;
+}
+async function openPhotoRoom() {
+  if (!S.canWrite) return;
+  const fl = S.plan.floors.find(f => f.id === S.floor), existing = roomsOn(S.floor);
+  const m = modal(`Add a room from photos · ${fl.name}`, `
+    <div class="sec">
+      <p style="margin:0">Stand in the doorway and photograph each wall, turning clockwise. Get floor and ceiling in the shot if you can. Four to six photos per room is plenty.</p>
+      <div class="drop" id="prDrop"><span id="prCount">No photos chosen yet</span><button class="btn primary" id="prPick">Choose or take photos</button></div>
+      <div class="photos" id="prThumbs"></div>
+    </div>
+    <div class="grid2">
+      <label class="field">Room name (optional)<input id="prName" placeholder="${store.sample ? "Claude will suggest one" : "e.g. Kitchen"}"></label>
+      <label class="field">Next to (optional)<select id="prNext"><option value="">${store.sample ? "Work it out from the doors" : "Place it at the side"}</option>${existing.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join("")}</select></label>
+      <label class="field" style="flex-direction:row;gap:8px;align-items:center;align-self:end;color:var(--ink)"><input type="checkbox" id="prOut"> This is outdoors (garden, patio, driveway)</label>
+      <label class="field">Wall in the first photo is (optional)<input class="num" id="prKnown" placeholder="${S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.80"}"></label>
+    </div>
+    <p class="note">${store.sample ? "Claude looks at the photos to work out the room's shape, size, doors and windows. One tape-measured wall makes the size much more accurate." : (STANDALONE ? "To estimate rooms from photos, add your Anthropic API key in Settings." : "Estimating from photos needs the app to be open in claude.ai.") + " For now the room starts as a 3.5 × 3 m box that you can resize."}</p>
+    <div class="row"><button class="btn primary" id="prGo" disabled>Build the room</button><span class="grow"></span><span class="note" id="prStatus"></span></div>
+    <div id="prResult"></div>`);
+  let files = [];
+  const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.multiple = true;
+  const setFiles = list => {
+    files = [...list].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|gif)$/i.test(f.name)).sort((a, b) => a.lastModified - b.lastModified);
+    m.el.querySelector("#prCount").textContent = files.length ? `${files.length} photo${files.length > 1 ? "s" : ""}, in the order they were taken` : "No photos chosen yet";
+    m.el.querySelector("#prThumbs").innerHTML = files.map((f, i) => `<div class="ph"><img src="${URL.createObjectURL(f)}" alt="Photo ${i + 1}"><span class="note" style="padding:2px 6px">${i + 1}</span></div>`).join("");
+    m.el.querySelector("#prGo").disabled = !files.length;
+  };
+  inp.onchange = () => setFiles(inp.files);
+  m.el.querySelector("#prPick").onclick = () => { inp.value = ""; inp.click(); };
+  const drop = m.el.querySelector("#prDrop");
+  drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); setFiles(e.dataTransfer.files); });
+  m.el.querySelector("#prGo").onclick = async () => {
+    const go = m.el.querySelector("#prGo"), status = m.el.querySelector("#prStatus"); go.disabled = true;
+    const known = parseLen(m.el.querySelector("#prKnown").value);
+    try {
+      const res = await buildRoomFromPhotos(files, { name: m.el.querySelector("#prName").value.trim(), outdoor: m.el.querySelector("#prOut").checked, nextTo: m.el.querySelector("#prNext").value, known: known && known > 0.3 ? known : null, floor: S.floor }, t => status.textContent = t);
+      status.textContent = "";
+      const r = res.room, b = bbox(r.pts), doors = r.openings.filter(o => o.type === "door").length, wins = r.openings.filter(o => o.type === "window").length, nItems = r.items.length;
+      m.el.querySelector("#prResult").innerHTML = `<div class="op"><b>Added ${esc(r.name)}: ${fmtLen(b.w)} × ${fmtLen(b.h)}, ${fmtArea(area(r.pts))}</b>
+        <span class="note">${isOut(r) ? "Outdoor area" : `${doors} door${doors === 1 ? "" : "s"}, ${wins} window${wins === 1 ? "" : "s"}`}, ${nItems} appliance${nItems === 1 ? "" : "s"} and other item${nItems === 1 ? "" : "s"}. ${res.placedNext ? `Placed against ${esc(res.placedNext)}${res.shared ? ", sharing its door" : ""}.` : res.first ? "This is the first room on the floor." : "Placed at the side of the plan, so drag it into position."} ${res.ai ? "Sizes are estimates until you measure them." : ""}</span>
+        ${res.notes ? `<span class="note"><b>Tip from Claude:</b> ${esc(res.notes)}</span>` : ""}
+        ${res.warn ? `<span class="note" style="color:var(--warn)">${esc(res.warn)}</span>` : ""}
+        <div class="row"><button class="btn primary" id="prNextRoom">Add the next room</button><button class="btn" id="prDone">Done, I'll check the plan</button></div></div>`;
+      m.el.querySelector("#prNextRoom").onclick = () => { m.close(); openPhotoRoom(); };
+      m.el.querySelector("#prDone").onclick = m.close;
+    } catch (e) { status.textContent = (e && e.message) || "Something went wrong. Try again."; go.disabled = false; }
+  };
+}
+async function buildRoomFromPhotos(files, opt, progress) {
+  const photos = [], aiBlobs = [];
+  for (let i = 0; i < files.length; i++) {
+    progress(`Saving photo ${i + 1} of ${files.length}…`);
+    const { blob, w, h } = await downscale(files[i]);
+    const p = { id: uid(), name: files[i].name.slice(0, 80), w, h, wall: null, added: Date.now() };
+    if (store.assets) { const up = await store.assets.upload(blob, { type: "image/jpeg" }); p.asset = up.id; }
+    else { await idb.put(p.id, blob); localPhotoURL[p.id] = URL.createObjectURL(blob); p.local = true; }
+    photos.push(p); aiBlobs.push(blob);
+  }
+  const existing = roomsOn(opt.floor), fl = S.plan.floors.find(f => f.id === opt.floor);
+  let est = null, warn = "";
+  if (store.sample) {
+    const lim = await store.sample.limits().catch(() => null);
+    if (lim && lim.images) {
+      const n = Math.min(aiBlobs.length, lim.images.maxCount), imgs = [];
+      for (let i = 0; i < n; i++) imgs.push((await downscale(aiBlobs[i], 1568, 0.85)).blob);
+      progress(`Claude is looking at ${n} photo${n > 1 ? "s" : ""}. This can take up to a minute…`);
+      const prompt = `You are helping build a floor plan of a house from phone photos. These ${n} photos all show ONE ${opt.outdoor ? "outdoor area (garden, patio, yard or driveway)" : "room or outdoor space"} on the ${fl.name}, in the order they were taken, turning clockwise.${opt.outdoor ? " Treat its boundary (fences, hedges, walls, the house wall) as its walls." : " If it is a garden or other outdoor space, say so and treat its boundary (fences, hedges, walls) as its walls."}
+Rooms already drawn on this floor: ${existing.length ? existing.map(r => `"${r.name}"`).join(", ") : "none yet"}.
+${opt.name ? `The user calls this room "${opt.name}".` : `Suggest a short name for the room, such as Kitchen, Bedroom 2 or Hall, that is not already in the list above.`}
+${opt.known ? `The main wall facing the camera in photo 1 is ${opt.known.toFixed(2)} m long, measured with a tape. Use it as the scale.` : ""}
+Work out the room's outline. Walk around the walls clockwise as seen from above, starting at the left end of the main wall facing the camera in photo 1, so wall 0 is that wall. For each wall give its length and whether you turn right ("R", an ordinary corner like in a rectangle) or left ("L", an inward corner like in an L-shaped room) at its end. A rectangular room has 4 walls, all "R". An L-shaped room has 6 walls, five "R" and one "L". Ignore small recesses, chimney breasts and bay windows under 0.4 m deep.
+For scale, use any measured length first, then objects of standard size: interior doors are about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high and 0.60 m deep, light switches about 1.2 m up, sockets about 0.3 m up, beds about 1.9 to 2.0 m long, and floor tiles and boards of standard sizes. Typical ceilings are 2.3 to 2.7 m.
+${ITEM_PROMPT}
+Reply with JSON only, in this shape:
+{"name":"Kitchen","outdoor":false,"walls":[{"length_m":4.2,"turn":"R"},{"length_m":3.1,"turn":"R"},{"length_m":4.2,"turn":"R"},{"length_m":3.1,"turn":"R"}],"ceiling_height_m":2.4,"photo_walls":[0,1,2,3],"openings":[{"type":"door","wall":2,"offset_m":0.5,"width_m":0.8,"height_m":2.03,"sill_m":0,"leads_to":"Hall"},{"type":"window","wall":0,"offset_m":1.2,"width_m":1.2,"height_m":1.2,"sill_m":0.9,"leads_to":null}],${ITEM_JSON},"confidence":"low|medium|high","notes":"one sentence on which extra photo or measurement would most improve this"}
+photo_walls lists, for each photo in order, the number of the wall it mainly shows, or null if unclear. offset_m is the distance along the wall from its start corner, going clockwise, to the near edge of the opening. For each door, leads_to is the room it opens into: an exact name from the list above when it matches, "outside" for an outside door, or a short guess such as "Hall" or "Landing". Use null for windows. Do not invent openings you cannot see.`;
+      try { est = await store.sample.json(prompt, { images: imgs, modelTier: "complex" }); }
+      catch (e) {
+        if (e && e.code === "bad_key") warn = "Your API key was refused, so the room starts as a box. Check the key in Settings.";
+        else if (e && e.code === "network") warn = "Couldn't reach Claude (are you offline?), so the room starts as a box. Use Estimate with Claude on it later.";
+        else if (e && e.code === "not_granted") warn = "Claude wasn't allowed to look at the photos, so the room starts as a box for you to resize.";
+        else if (e && e.code === "rate_limited") warn = "Claude is busy right now, so the room starts as a box. Use Estimate with Claude on it later.";
+        else warn = "Claude couldn't read these photos, so the room starts as a box. Use Estimate with Claude on it later.";
+      }
+    }
+  }
+  const r = rect(opt.name || (est && typeof est.name === "string" && est.name.trim().slice(0, 40)) || (opt.outdoor ? "Garden" : `Room ${existing.length + 1}`), opt.floor, 0, 0, 3.5, 3, S.plan.rooms.length % 7);
+  const pts = est && polyFromWalls(est.walls);
+  if (pts) r.pts = pts;
+  else if (est && Array.isArray(est.walls) && est.walls.length >= 2) { const w = +est.walls[0].length_m || 3.5, d = +est.walls[1].length_m || 3; r.pts = [[0, 0], [w, 0], [w, d], [0, d]].map(p => [r2(p[0]), r2(p[1])]); }
+  if (est && est.ceiling_height_m > 1.8 && est.ceiling_height_m < 6) r.height = Math.round(est.ceiling_height_m * 100) / 100;
+  const nE = r.pts.length;
+  if (est && Array.isArray(est.openings)) {
+    for (const o of est.openings) {
+      if (!(o && (o.type === "door" || o.type === "window") && Number.isInteger(o.wall) && o.wall >= 0 && o.wall < nE && o.width_m > 0.2)) continue;
+      const op = o.type === "door" ? door(o.wall, +o.offset_m || 0.2, +o.width_m, { height: +o.height_m || 2.03 }) : win(o.wall, +o.offset_m || 0.2, +o.width_m, { height: +o.height_m || 1.2, sill: o.sill_m != null ? +o.sill_m : 0.9 });
+      if (o.type === "door" && o.leads_to) op.leadsTo = String(o.leads_to).slice(0, 40);
+      clampOpening(r, op); r.openings.push(op);
+    }
+  }
+  if (opt.outdoor || (est && est.outdoor === true)) { r.kind = "outdoor"; r.openings = []; r.height = null; r.c = 5; }
+  r.items = parseItems(est && est.items, nE); r.items.forEach(it => clampItem(r, it));
+  const pw = est && Array.isArray(est.photo_walls) ? est.photo_walls : null;
+  photos.forEach((p, i) => { const w = pw ? pw[i] : (est ? null : i); p.wall = Number.isInteger(w) && w >= 0 && w < nE ? w : null; });
+  r.photos = photos;
+  if (opt.known && setEdgeLength(r, 0, opt.known)) r.measured[0] = true;
+  r.openings.forEach(o => clampOpening(r, o));
+  // which room does it connect to?
+  let nb = opt.nextTo ? existing.find(x => x.id === opt.nextTo) : null;
+  if (!nb) for (const o of r.openings) { if (o.leadsTo && !/outside/i.test(o.leadsTo)) { nb = existing.find(x => sameName(x.name, o.leadsTo)); if (nb) break; } }
+  if (!nb) nb = existing.find(x => x.openings.some(o => sameName(o.leadsTo, r.name))) || null;
+  const before = JSON.stringify(S.plan);
+  const nDoors = r.openings.length;
+  const placed = placeRoom(r, nb);
+  const shared = r.openings.length < nDoors;
+  S.plan.rooms.push(r); S.sel = r.id; S.tab = "room";
+  commit(before);
+  fit(S.floor); renderPlan();
+  return { room: r, shared, placedNext: placed ? placed.name : null, first: !existing.length, ai: !!est, notes: est && typeof est.notes === "string" ? est.notes : "", warn };
+}
+
+/* ---------- settings ---------- */
+function openSettings() {
+  const ro = !S.canWrite;
+  const m = modal("Settings", `
+    <div class="grid2">
+      <label class="field">House name<input id="sName" value="${esc(S.plan.name)}" ${ro ? "disabled" : ""}></label>
+      <label class="field">Units<select id="sUnits"><option value="m" ${S.plan.units === "m" ? "selected" : ""}>Metric (m)</option><option value="ft" ${S.plan.units === "ft" ? "selected" : ""}>Imperial (ft, in)</option></select></label>
+      <label class="field">Interior wall thickness<input class="num" id="sWall" value="${esc(fmtIn(S.plan.wallT))}" ${ro ? "disabled" : ""}></label>
+    </div>
+    <div class="sec"><h2>Floors</h2>
+      ${S.plan.floors.map((f, i) => `<div class="grid3" data-fl="${f.id}">
+        <label class="field">Name<input data-ff="name" value="${esc(f.name)}" ${ro ? "disabled" : ""}></label>
+        <label class="field">Ceiling height<input class="num" data-ff="height" value="${esc(fmtIn(f.height))}" ${ro ? "disabled" : ""}></label>
+        <label class="field">Floor thickness above<input class="num" data-ff="slab" value="${esc(fmtIn(f.slab ?? 0.25))}" ${ro ? "disabled" : ""}></label>
+      </div>`).join("")}
+      ${ro ? "" : `<div class="row"><button class="btn" id="addFloor">+ Add a floor</button><button class="btn" id="rmFloor" ${S.plan.floors.length > 1 && !roomsOn(S.plan.floors[S.plan.floors.length - 1].id).length ? "" : "disabled"}>Remove top floor</button></div>
+      <p class="note">A floor can be removed once it has no rooms.</p>`}
+    </div>
+    ${STANDALONE ? `<div class="sec"><h2>Building rooms from photos</h2>
+      <label class="field">Anthropic API key<input id="sKey" type="password" autocomplete="off" placeholder="sk-ant-..." value="${esc(window.HOUSE_KEY ? window.HOUSE_KEY.get() : "")}"></label>
+      <p class="note">Needed only for "Room from photos" and "Estimate with Claude". Get a key at console.anthropic.com. It's kept in this browser on this device and sent only to Anthropic. Each room costs a few cents.</p>
+      <div class="row"><button class="btn" id="sKeySave">Save key</button><button class="btn" id="sKeyClear">Remove key</button><span class="note" id="sKeyMsg"></span></div></div>` : ""}
+    ${ro ? "" : `<div class="sec"><h2>Start over</h2><div class="confirm" id="resetWrap"><button class="btn danger" id="resetBtn">Start a blank house</button></div></div>`}`);
+  const el = m.el;
+  el.querySelector("#sUnits").onchange = e => { S.plan.units = e.target.value; if (S.canWrite) commit(); else renderAll(); m.close(); openSettings(); };
+  if (STANDALONE) {
+    const setKey = v => { window.HOUSE_KEY.set(v); store.sample = window.HOUSE_CAPS("sample"); el.querySelector("#sKeyMsg").textContent = v ? "Saved" : "Removed"; renderAll(); };
+    el.querySelector("#sKeySave").onclick = () => { const v = el.querySelector("#sKey").value.trim(); if (v && !/^sk-ant-/.test(v)) { el.querySelector("#sKeyMsg").textContent = "That doesn't look like an Anthropic key (they start with sk-ant-)."; return; } setKey(v); };
+    el.querySelector("#sKeyClear").onclick = () => { el.querySelector("#sKey").value = ""; setKey(""); };
+  }
+  if (ro) return;
+  el.querySelector("#sName").onchange = e => edit(() => S.plan.name = e.target.value.trim() || "My house");
+  el.querySelector("#sWall").onchange = e => { const v = parseLen(e.target.value); if (v && v >= 0.05 && v <= 0.5) edit(() => S.plan.wallT = v); else toast("Use a thickness between 5 cm and 50 cm."); };
+  el.querySelectorAll("[data-fl]").forEach(row => row.querySelectorAll("[data-ff]").forEach(inp => inp.onchange = () => {
+    const f = S.plan.floors.find(x => x.id === row.dataset.fl), k = inp.dataset.ff;
+    if (k === "name") edit(() => f.name = inp.value.trim() || "Floor");
+    else { const v = parseLen(inp.value); if (v != null && v >= (k === "slab" ? 0 : 1.5) && v < 8) edit(() => f[k] = v); else toast("That height wasn't understood."); }
+  }));
+  el.querySelector("#addFloor").onclick = () => { edit(() => S.plan.floors.push({ id: "f" + uid(), name: `Floor ${S.plan.floors.length + 1}`, height: 2.4, slab: 0.25 })); m.close(); openSettings(); };
+  el.querySelector("#rmFloor").onclick = () => { edit(() => S.plan.floors.pop()); m.close(); openSettings(); };
+  el.querySelector("#resetBtn").onclick = () => {
+    const w = el.querySelector("#resetWrap");
+    w.innerHTML = `<span>Remove every room and start again? Photos stay stored but are no longer linked to rooms.</span><button class="btn danger" id="rsYes">Start blank</button><button class="btn" id="rsNo">Cancel</button>`;
+    w.querySelector("#rsNo").onclick = () => { m.close(); openSettings(); };
+    w.querySelector("#rsYes").onclick = () => { startBlank(); m.close(); };
+  };
+}
+function startBlank() { const before = JSON.stringify(S.plan); S.plan = blankPlan(); S.sel = null; S.floor = "f0"; S.tab = "rooms"; commit(before); fit(); renderPlan(); toast("Blank house ready. Add your first room from its photos."); }
+$("#settingsBtn").onclick = openSettings;
+function restoreBlankBtn() { $("#blankWrap").innerHTML = `<button class="btn small" id="blankBtn">Start a blank house</button>`; bindBlank(); }
+function bindBlank() {
+  const b = $("#blankBtn"); if (!b) return;
+  b.onclick = () => {
+    const w = $("#blankWrap");
+    w.innerHTML = `<span>Remove the example rooms?</span><button class="btn small danger" id="bYes">Start blank</button><button class="btn small" id="bNo">Keep example</button>`;
+    w.querySelector("#bNo").onclick = restoreBlankBtn;
+    w.querySelector("#bYes").onclick = () => { startBlank(); restoreBlankBtn(); };
+  };
+}
+
+/* ---------- export ---------- */
+const EXPORT_CSS = `.bg{fill:#fff}.room{stroke:none}${PALETTE_LIGHT.map((c, i) => `.t${i}{fill:${c}}`).join("")}.wall{fill:none;stroke:#1A2220;stroke-linejoin:miter}.gapl{stroke:#fff}.sym{fill:none;stroke:#1A2220}.win{stroke:#1A2220}.ghost{fill:none;stroke:#9AA6A1}.lbl{fill:#1A2220;font-family:'IBM Plex Sans Condensed',Arial,sans-serif;font-weight:600;text-anchor:middle}.lbl2{fill:#5B6863;font-family:'IBM Plex Mono',Consolas,monospace;text-anchor:middle}.dim{fill:#1A2220;font-family:'IBM Plex Mono',Consolas,monospace;text-anchor:middle;dominant-baseline:middle}.dim.unk{fill:#A8620B}.out{fill:#DCEBD3}.fence{fill:none;stroke:#6E9A5B}.itm{stroke:#1A2220}.itm.app{fill:#fff}.itm.furn{fill:#E9DDCB}.itm.gard{fill:#BFD8AC}.ilbl{fill:#5B6863;font-family:Arial,sans-serif;text-anchor:middle;dominant-baseline:middle}.ttl{fill:#1A2220;font-family:Arial,sans-serif;font-weight:700}.sub{fill:#5B6863;font-family:Arial,sans-serif}.bar{fill:#1A2220}`;
+function floorSVG(fid, k = 60) {
+  const rooms = roomsOn(fid), f = S.plan.floors.find(x => x.id === fid);
+  const b = rooms.length ? bbox(rooms.flatMap(r => r.pts)) : { x0: 0, y0: 0, w: 5, h: 5 };
+  const pad = 1.0, head = 1.1, foot = 1.0, W = (b.w + pad * 2) * k, H = (b.h + pad * 2 + head + foot) * k, fs = 12 / k;
+  const x0 = b.x0 - pad, y0 = b.y0 - pad - head;
+  const total = rooms.reduce((s, r) => s + area(r.pts), 0);
+  const barLen = S.plan.units === "ft" ? 10 * FT : 2, by = b.y0 + b.h + pad * 0.9, bx = b.x0;
+  const nX = b.x0 + b.w, nY = b.y0 - head * 0.55;
+  const body = planMarkup(fid, { k, dimsAll: true, layers: { ...S.layers, photos: false } });
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(W)}" height="${Math.round(H)}" viewBox="${x0} ${y0} ${b.w + pad * 2} ${b.h + pad * 2 + head + foot}"><style>${EXPORT_CSS}</style>
+<rect class="bg" x="${x0}" y="${y0}" width="${b.w + pad * 2}" height="${b.h + pad * 2 + head + foot}"/>
+<text class="ttl" x="${b.x0}" y="${b.y0 - head * 0.55}" font-size="${fs * 1.7}">${esc(S.plan.name)} · ${esc(f.name)}</text>
+<text class="sub" x="${b.x0}" y="${b.y0 - head * 0.55 + fs * 1.7}" font-size="${fs}">${rooms.length} rooms · ${esc(fmtArea(total))} · ceiling ${esc(fmtLen(f.height))}</text>
+<g transform="translate(${nX} ${nY})"><path d="M0,${-fs * 1.4} L${fs * 0.6},${fs * 0.4} L0,0 L${-fs * 0.6},${fs * 0.4}Z" class="bar"/><text class="sub" x="0" y="${fs * 1.6}" font-size="${fs}" text-anchor="middle">N</text></g>
+${body}
+<rect class="bar" x="${bx}" y="${by}" width="${barLen / 2}" height="${fs * 0.4}"/><rect x="${bx + barLen / 2}" y="${by}" width="${barLen / 2}" height="${fs * 0.4}" fill="#fff" stroke="#1A2220" stroke-width="${1 / k}"/>
+<text class="sub" x="${bx}" y="${by + fs * 1.5}" font-size="${fs * 0.85}">0</text><text class="sub" x="${bx + barLen}" y="${by + fs * 1.5}" font-size="${fs * 0.85}" text-anchor="middle">${S.plan.units === "ft" ? "10 ft" : "2 m"}</text>
+<text class="sub" x="${b.x0 + b.w}" y="${by + fs * 1.5}" font-size="${fs * 0.85}" text-anchor="end">Lengths in orange with ? are not measured yet</text>
+</svg>`;
+}
+function svgToPNG(svgStr, scale = 2) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => { const c = document.createElement("canvas"); c.width = img.width * scale; c.height = img.height * scale; const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); x.drawImage(img, 0, 0, c.width, c.height); c.toBlob(b => b ? res({ blob: b, canvas: c }) : rej(new Error("png")), "image/png"); };
+    img.onerror = () => rej(new Error("svg"));
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgStr);
+  });
+}
+const slug = s => (s || "house").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "house";
+async function save(filename, data) {
+  if (!store.downloads) { toast("Saving files isn't available in this view. Open the app from claude.ai to export.", 4000); return false; }
+  try { await store.downloads.save({ filename, data }); toast(`Saved ${filename}`); return true; }
+  catch (e) { if (e && e.code === "declined") return false; toast(e && e.code === "rate_limited" ? "Another save is waiting for your answer." : "The file couldn't be saved.", 3500); return false; }
+}
+function scheduleCSV() {
+  const cuts = computeCuts(S.plan), q = v => `"${String(v).replace(/"/g, '""')}"`, ft = S.plan.units === "ft";
+  const head = ft ? ["Floor", "Room", "Floor area (ft2)", "Perimeter (ft)", "Ceiling (ft)", "Wall area net (ft2)", "Volume (ft3)", "Wall lengths (ft)", "Measured walls", "Photos", "Doors", "Windows"]
+    : ["Floor", "Room", "Floor area (m2)", "Perimeter (m)", "Ceiling (m)", "Wall area net (m2)", "Volume (m3)", "Wall lengths (m)", "Measured walls", "Photos", "Doors", "Windows"];
+  const L = v => ft ? (v / FT).toFixed(2) : v.toFixed(2), A = v => ft ? (v * 10.7639).toFixed(1) : v.toFixed(2), V = v => ft ? (v * 35.3147).toFixed(0) : v.toFixed(2);
+  const rows = [head.map(q).join(",")];
+  for (const f of S.plan.floors) for (const r of roomsOn(f.id)) {
+    const s = roomStats(r, cuts), names = wallNames(r);
+    rows.push([f.name, r.name, A(s.area), L(s.perim), L(s.h), A(s.wallNet), V(s.vol), edges(r).map((e, i) => `${names[i]} ${L(e.len)}`).join("; "), Object.keys(r.measured).length, r.photos.length, r.openings.filter(o => o.type === "door").length, r.openings.filter(o => o.type === "window").length].map(q).join(","));
+  }
+  return rows.join("\r\n");
+}
+async function exportPDF() {
+  if (!window.jspdf) { toast("The PDF library couldn't load. Check your connection and reload."); return; }
+  const { jsPDF } = window.jspdf, doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  let first = true;
+  for (const f of S.plan.floors) {
+    if (!roomsOn(f.id).length) continue;
+    if (!first) doc.addPage(); first = false;
+    const { canvas } = await svgToPNG(floorSVG(f.id, 60), 2);
+    const W = 277, H = 190, s = Math.min(W / canvas.width, H / canvas.height);
+    doc.addImage(canvas.toDataURL("image/jpeg", 0.9), "JPEG", 10 + (W - canvas.width * s) / 2, 10 + (H - canvas.height * s) / 2, canvas.width * s, canvas.height * s);
+  }
+  if (!first) doc.addPage();
+  doc.setFont("helvetica", "bold"); doc.setFontSize(16); doc.text(`${S.plan.name}: room schedule`, 14, 18);
+  doc.setFontSize(9); const cols = [14, 60, 110, 140, 170, 205, 240], hd = ["Floor", "Room", "Floor area", "Perimeter", "Ceiling", "Wall area", "Volume"];
+  let y = 28; hd.forEach((h, i) => doc.text(h, cols[i], y)); doc.setFont("helvetica", "normal"); y += 6;
+  const cuts = computeCuts(S.plan), plain = s => s.replace("²", "2").replace("³", "3").replace("′", "'").replace("″", '"');
+  let ta = 0;
+  for (const f of S.plan.floors) for (const r of roomsOn(f.id)) {
+    const st = roomStats(r, cuts); ta += st.area;
+    [f.name, r.name, plain(fmtArea(st.area)), plain(fmtLen(st.perim)), plain(fmtLen(st.h)), plain(fmtArea(st.wallNet)), plain(fmtVol(st.vol))].forEach((v, i) => doc.text(String(v).slice(0, 28), cols[i], y));
+    y += 5.5; if (y > 195) { doc.addPage(); y = 20; }
+  }
+  doc.setFont("helvetica", "bold"); doc.text("Whole house", cols[0], y + 2); doc.text(plain(fmtArea(ta)), cols[2], y + 2);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.text("Floor areas are inside the walls. Wall area excludes doors and windows. Unmeasured walls are estimates.", 14, 203);
+  await save(`${slug(S.plan.name)}-plan.pdf`, doc.output("blob"));
+}
+async function export3D() {
+  if (!window.THREE || !THREE.GLTFExporter || !window.JSZip) { toast("The 3D export tools couldn't load. Check your connection and reload."); return; }
+  const scene = new THREE.Scene(); scene.add(build3D({ mode: "all", labels: false, photos: false, layers: { app: true, furn: true, gard: true, garden: true } }));
+  const glb = await new Promise((res, rej) => { try { new THREE.GLTFExporter().parse(scene, r => res(r), { binary: true }); } catch (e) { rej(e); } });
+  const obj = new THREE.OBJExporter().parse(scene);
+  const zip = new JSZip(), n = slug(S.plan.name);
+  zip.file(`${n}.glb`, glb); zip.file(`${n}.obj`, obj);
+  zip.file("README.txt", `${S.plan.name} 3D model\n\n${n}.glb  open in Blender, SketchUp (with glTF importer), Windows 3D Viewer, or any glTF viewer. Keeps colours.\n${n}.obj  geometry only, for older CAD and 3D tools.\n\nUnits are metres. Y is up. North is towards -Z.\n`);
+  await save(`${n}-3d-model.zip`, await zip.generateAsync({ type: "blob" }));
+}
+function openExport() {
+  const f = S.plan.floors.find(x => x.id === S.floor);
+  const m = modal("Export", `
+    <div class="sec"><h2>2D floor plan</h2><div class="exgrid">
+      <button class="exbtn" data-ex="png"><b>Image (PNG)</b><small>${esc(f.name)}, with wall lengths</small></button>
+      <button class="exbtn" data-ex="svg"><b>Vector (SVG)</b><small>${esc(f.name)}, scales without blurring</small></button>
+      <button class="exbtn" data-ex="pdf"><b>PDF</b><small>Every floor plus a room schedule</small></button>
+      <button class="exbtn" data-ex="csv"><b>Room list (CSV)</b><small>Areas, lengths and volumes for a spreadsheet</small></button>
+    </div></div>
+    <div class="sec"><h2>3D model</h2><div class="exgrid">
+      <button class="exbtn" data-ex="3d"><b>GLB + OBJ (zip)</b><small>For Blender, SketchUp and other 3D tools</small></button>
+      <button class="exbtn" data-ex="shot"><b>3D snapshot (PNG)</b><small>The 3D view exactly as you see it</small></button>
+    </div></div>
+    <div class="sec"><h2>Project file</h2><div class="exgrid">
+      <button class="exbtn" data-ex="pzip"><b>Save project with photos (zip)</b><small>Everything, to back up or open on another device</small></button>
+      <button class="exbtn" data-ex="json"><b>Save plan only (JSON)</b><small>Rooms, sizes, doors and windows, no photos</small></button>
+      ${S.canWrite ? `<button class="exbtn" data-ex="open"><b>Open project file</b><small>Replace this plan with a saved zip or JSON</small></button>` : ""}
+    </div>${STANDALONE ? `<p class="note">To move your work between your phone and computer, save the project with photos on one and open it on the other.</p>` : ""}</div>
+    ${store.downloads ? "" : `<p class="note">Saving files only works when the app is opened inside claude.ai.</p>`}`);
+  m.el.addEventListener("click", async e => {
+    const b = e.target.closest("[data-ex]"); if (!b) return;
+    const k = b.dataset.ex, n = slug(S.plan.name), fn = slug(f.name);
+    b.disabled = true;
+    try {
+      if (k === "png") { const { blob } = await svgToPNG(floorSVG(S.floor), 2); await save(`${n}-${fn}.png`, blob); }
+      else if (k === "svg") await save(`${n}-${fn}.svg`, floorSVG(S.floor));
+      else if (k === "pdf") await exportPDF();
+      else if (k === "csv") await save(`${n}-rooms.csv`, scheduleCSV());
+      else if (k === "3d") await export3D();
+      else if (k === "shot") {
+        if (S.view !== "3d") { m.close(); setView("3d"); await new Promise(r => setTimeout(r, 400)); }
+        T3.renderer.render(T3.scene, T3.camera);
+        const blob = await new Promise(r => T3.renderer.domElement.toBlob(r, "image/png")); await save(`${n}-3d.png`, blob);
+      }
+      else if (k === "pzip") await exportProjectZip();
+      else if (k === "json") await save(`${n}-project.json`, JSON.stringify(S.plan, null, 1));
+      else if (k === "open") { const inp = $("#projInput"); inp.value = ""; inp.click(); m.close(); }
+    } catch (err) { console.error(err); toast("Export failed. Try again."); }
+    b.disabled = false;
+  });
+}
+$("#exportBtn").onclick = openExport;
+async function exportProjectZip() {
+  if (!window.JSZip) { toast("The zip tool couldn't load. Check your connection and reload."); return; }
+  const zip = new JSZip(), n = slug(S.plan.name); let missing = 0;
+  zip.file("project.json", JSON.stringify(S.plan, null, 1));
+  for (const r of S.plan.rooms) for (const p of r.photos) {
+    try { zip.file(`photos/${p.id}.jpg`, await photoBlob(p)); } catch { missing++; }
+  }
+  setSync("busy", "Packing project…");
+  const blob = await zip.generateAsync({ type: "blob" });
+  scheduleSave();
+  if (await save(`${n}-project.zip`, blob) && missing) toast(`${missing} photo${missing > 1 ? "s were" : " was"} missing on this device and left out.`, 4000);
+}
+async function readProjectFile(f) {
+  if (/\.zip$/i.test(f.name) || f.type === "application/zip" || f.type === "application/x-zip-compressed") {
+    if (!window.JSZip) throw 0;
+    const zip = await JSZip.loadAsync(f), pj = zip.file("project.json"); if (!pj) throw 0;
+    const p = JSON.parse(await pj.async("string")); if (!validPlan(p)) throw 0;
+    let i = 0, total = p.rooms.reduce((s, r) => s + r.photos.length, 0);
+    for (const r of p.rooms) for (const ph of r.photos) {
+      const zf = zip.file(`photos/${ph.id}.jpg`); if (!zf) continue;
+      setSync("busy", `Restoring photo ${++i} of ${total}…`);
+      const blob = new Blob([await zf.async("arraybuffer")], { type: "image/jpeg" });
+      if (store.assets) { const up = await store.assets.upload(blob, { type: "image/jpeg" }); ph.asset = up.id; delete ph.local; }
+      else { await idb.put(ph.id, blob); if (localPhotoURL[ph.id]) URL.revokeObjectURL(localPhotoURL[ph.id]); localPhotoURL[ph.id] = URL.createObjectURL(blob); delete ph.asset; ph.local = true; }
+    }
+    return p;
+  }
+  return JSON.parse(await f.text());
+}
+$("#projInput").addEventListener("change", async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const p = await readProjectFile(f); if (!validPlan(p)) throw 0;
+    const before = JSON.stringify(S.plan); S.plan = migrate(p); S.plan.example = false; S.sel = null; fixFloor(); commit(before); fit(); renderPlan(); toast("Project opened. Undo goes back to the previous plan.");
+  } catch { toast("That file isn't a House Plan Studio project."); }
+});
+
+/* ---------- wire up ---------- */
+$("#addRect").onclick = () => addRoom("rect");
+$("#addPhotoRoom").onclick = openPhotoRoom;
+$("#emptyPhotoRoom").onclick = openPhotoRoom;
+$("#addL").onclick = () => addRoom("L");
+document.querySelectorAll("[data-layers]").forEach(b => b.addEventListener("click", e => {
+  e.stopPropagation(); const pop = $("#layersPop"); pop.hidden = !pop.hidden;
+  document.querySelectorAll("[data-layers]").forEach(x => x.setAttribute("aria-expanded", !pop.hidden));
+}));
+document.addEventListener("click", e => { const pop = $("#layersPop"); if (!pop.hidden && !pop.contains(e.target)) { pop.hidden = true; document.querySelectorAll("[data-layers]").forEach(x => x.setAttribute("aria-expanded", "false")); } });
+document.querySelectorAll("#layersPop [data-ly]").forEach(el => el.addEventListener("change", () => {
+  S.layers[el.dataset.ly] = el.checked; lsSet("house-layers", JSON.stringify(S.layers));
+  renderPlan(); if (S.view === "3d") rebuild3D();
+}));
+$("#addGarden").onclick = () => addRoom("rect", "outdoor");
+$("#zin").onclick = () => zoomBy(1.25); $("#zout").onclick = () => zoomBy(0.8); $("#zfit").onclick = () => { fit(S.floor); renderPlan(); };
+$("#undoBtn").onclick = undo;
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); undo(); }
+  if ((e.key === "Delete" || e.key === "Backspace") && S.sel && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName) && !$("#modalRoot").children.length && S.canWrite) {
+    const r = selRoom(); edit(() => { S.plan.rooms = S.plan.rooms.filter(x => x !== r); S.sel = null; }); toast(`${r.name} deleted. Undo brings it back.`);
+  }
+});
+new ResizeObserver(() => renderPlan()).observe(svg);
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => { if (S.view === "3d") rebuild3D(); });
+
+(function boot() {
+  let p = null; try { p = JSON.parse(lsGet(LS_KEY) || "null"); } catch { }
+  S.plan = validPlan(p) ? migrate(p) : examplePlan();
+  fixFloor(); bindBlank();
+  requestAnimationFrame(() => { fit(); renderAll(); });
+  renderAll(); loadLocalPhotos(); initStore();
+})();
+</script>
+
+</body>
+</html>
