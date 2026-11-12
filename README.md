@@ -28,6 +28,8 @@ Build a floor plan of your house from photos and a few measurements. Works in th
 - Exports: PNG, SVG, PDF, CSV, a 3D model (GLB + OBJ), and a project zip with photos to move work between devices.
 
 ## Rooms from photos
+**+ Room from photos → Take photos with the guide** opens the camera with a shot list: each wall in turn, then corners, doors and windows, and furniture. It shows a level, warns about blurry, dark or tilted shots so you can retake them, and lets you enter a measured wall length. On Android phones that support AR (Chrome with Google Play Services for AR), **Measure with AR** measures a wall by tapping its two corners on the floor. A measured wall sets the scale of the whole room.
+
 Building rooms and finding appliances from photos uses Claude. Add your own Anthropic API key in **Settings** (get one at console.anthropic.com). The key stays in your browser and is sent only to Anthropic. Everything else works without a key.
 
 ## Your data

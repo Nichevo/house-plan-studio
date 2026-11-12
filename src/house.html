@@ -196,6 +196,56 @@ table.tot tr.sum td{font-weight:600;border-bottom:0}
   .tabs{top:0}
   .hint{display:none}
 }
+
+/* guided capture */
+body.capturing{overflow:hidden}
+.capture{position:fixed;inset:0;z-index:55;background:#000;color:#fff;display:grid;grid-template-rows:minmax(0,1fr) auto;font-size:14px}
+.capture.flash .capview{opacity:.4}
+.capview{position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;min-height:0}
+.capview video{max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain;background:#000}
+.capgrid{position:absolute;inset:0;pointer-events:none}
+.capgrid i{position:absolute;background:rgba(255,255,255,.28)}
+.capgrid i:nth-child(1),.capgrid i:nth-child(2){top:0;bottom:0;width:1px}
+.capgrid i:nth-child(1){left:33.3%}.capgrid i:nth-child(2){left:66.6%}
+.capgrid i:nth-child(3),.capgrid i:nth-child(4){left:0;right:0;height:1px}
+.capgrid i:nth-child(3){top:33.3%}.capgrid i:nth-child(4){top:66.6%}
+.caplevel{position:absolute;top:12px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:4px;background:rgba(0,0,0,.55);padding:6px 12px;border-radius:8px}
+.caplevel .bar{display:block;width:90px;height:3px;border-radius:2px;background:#E3A44B}
+.caplevel.ok .bar{background:#6CC08C}
+.caplevel b{font:600 13px var(--f-label)}
+.caprot,.capnocam{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.65);padding:10px 14px;border-radius:8px;text-align:center;max-width:80%}
+.capnocam p{margin:0}
+.capside{background:#111;padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:8px;max-height:52vh;overflow:auto}
+.captop{display:flex;align-items:center;gap:8px}.captop h3{flex:1;color:#fff}
+.capture .xbtn{color:#bbb}
+.captip{margin:0;color:#ccc;line-height:1.4}
+.caplen{display:flex;gap:8px;align-items:end;flex-wrap:wrap}
+.caplen .field{flex:1;min-width:150px;color:#ccc}
+.caplen input{background:#222;color:#fff;border-color:#444}
+.capwarn{display:flex;gap:10px;align-items:center;background:#3A2D18;border:1px solid #E3A44B;border-radius:8px;padding:8px}
+.capwarn img{width:72px;height:54px;object-fit:cover;border-radius:4px}
+.capwarn b{display:block;font-weight:500;margin-bottom:6px}
+.capshoot{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.capshoot .btn{min-width:72px;justify-content:center}
+.shutter{width:64px;height:64px;border-radius:50%;border:4px solid #fff;background:#fff;box-shadow:inset 0 0 0 3px #111;flex:none}
+.shutter:active{transform:scale(.94)}
+.capsteps{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}
+.capstep{flex:none;display:flex;align-items:center;gap:6px;border:1px solid #333;background:#1b1b1b;color:#ddd;border-radius:8px;padding:4px 8px 4px 4px;font:500 12px var(--f-label)}
+.capstep[aria-current="true"]{border-color:#55C19A;background:#1E3A30;color:#fff}
+.capstep img,.capstep .dot{width:34px;height:26px;border-radius:4px;object-fit:cover;background:#333;display:block}
+.capture .btn{background:#222;color:#fff;border-color:#444}
+.capture .btn.primary{background:#55C19A;border-color:#55C19A;color:#0C1412}
+.capture .btn:disabled{opacity:.45}
+@media (orientation: landscape) and (max-height: 600px){
+  .capture{grid-template-rows:none;grid-template-columns:minmax(0,1fr) min(340px,42vw)}
+  .capside{max-height:none;height:100%;padding-right:calc(14px + env(safe-area-inset-right,0px))}
+}
+.armeasure{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;justify-content:space-between;color:#fff;pointer-events:none}
+.armeasure .artop,.armeasure .arbot{background:rgba(0,0,0,.6);padding:12px 16px;pointer-events:auto}
+.armeasure .arbot{display:flex;flex-direction:column;gap:8px;align-items:center;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+.armeasure #arLen{font-size:28px;font-weight:600;min-height:34px}
+.arcross{position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border:2px solid rgba(255,255,255,.8);border-radius:50%}
+.prpick{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
 @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
 </style>
 
@@ -1553,13 +1603,14 @@ function placeRoom(r, nb) {
   if (best.dropMine) r.openings = r.openings.filter(o => o.id !== myDoor.id); // the neighbour's door already opens this wall
   return nb;
 }
-async function openPhotoRoom() {
+async function openPhotoRoom(preset) {
   if (!S.canWrite) return;
+  const pre = preset && Array.isArray(preset.files) ? preset : null;
   const fl = S.plan.floors.find(f => f.id === S.floor), existing = roomsOn(S.floor);
   const m = modal(`Add a room from photos · ${fl.name}`, `
     <div class="sec">
-      <p style="margin:0">Stand in the doorway and photograph each wall, turning clockwise. Get floor and ceiling in the shot if you can. Four to six photos per room is plenty.</p>
-      <div class="drop" id="prDrop"><span id="prCount">No photos chosen yet</span><button class="btn primary" id="prPick">Choose or take photos</button></div>
+      <p style="margin:0">${pre ? "Check the photos, then build the room." : "The guide walks you round the room with the camera: each wall in turn, then corners, doors and furniture. It checks every shot and can measure walls on phones with AR. Or pick photos you already have, one per wall, turning clockwise."}</p>
+      <div class="drop" id="prDrop"><span id="prCount">No photos chosen yet</span><div class="prpick"><button class="btn primary" id="prGuide">${pre ? "Start again with the guide" : "Take photos with the guide"}</button><button class="btn" id="prPick">Choose photos</button></div></div>
       <div class="photos" id="prThumbs"></div>
     </div>
     <div class="grid2">
@@ -1571,16 +1622,25 @@ async function openPhotoRoom() {
     <p class="note">${store.sample ? "Claude looks at the photos to work out the room's shape, size, doors and windows. One tape-measured wall makes the size much more accurate." : (STANDALONE ? "To estimate rooms from photos, add your Anthropic API key in Settings." : "Estimating from photos needs the app to be open in claude.ai.") + " For now the room starts as a 3.5 × 3 m box that you can resize."}</p>
     <div class="row"><button class="btn primary" id="prGo" disabled>Build the room</button><span class="grow"></span><span class="note" id="prStatus"></span></div>
     <div id="prResult"></div>`);
-  let files = [];
+  let files = [], labels = null, measured = [];
   const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.multiple = true;
-  const setFiles = list => {
-    files = [...list].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|gif)$/i.test(f.name)).sort((a, b) => a.lastModified - b.lastModified);
-    m.el.querySelector("#prCount").textContent = files.length ? `${files.length} photo${files.length > 1 ? "s" : ""}, in the order they were taken` : "No photos chosen yet";
-    m.el.querySelector("#prThumbs").innerHTML = files.map((f, i) => `<div class="ph"><img src="${URL.createObjectURL(f)}" alt="Photo ${i + 1}"><span class="note" style="padding:2px 6px">${i + 1}</span></div>`).join("");
+  const setFiles = (list, keepOrder) => {
+    files = [...list].filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|gif)$/i.test(f.name));
+    if (!keepOrder) { files.sort((a, b) => a.lastModified - b.lastModified); labels = null; measured = []; }
+    m.el.querySelector("#prCount").textContent = files.length ? `${files.length} photo${files.length > 1 ? "s" : ""}${keepOrder ? " from the guide" : ", in the order they were taken"}` : "No photos chosen yet";
+    m.el.querySelector("#prThumbs").innerHTML = files.map((f, i) => `<div class="ph"><img src="${URL.createObjectURL(f)}" alt="Photo ${i + 1}"><span class="note" style="padding:2px 6px">${i + 1}${labels && labels[i] ? ` · ${esc(labels[i].split(",")[0])}` : ""}</span></div>`).join("");
     m.el.querySelector("#prGo").disabled = !files.length;
   };
   inp.onchange = () => setFiles(inp.files);
   m.el.querySelector("#prPick").onclick = () => { inp.value = ""; inp.click(); };
+  m.el.querySelector("#prGuide").onclick = () => { const name = m.el.querySelector("#prName").value.trim(); m.close(); openCapture({ name }); };
+  if (pre) {
+    labels = pre.labels || null; measured = pre.measured || []; setFiles(pre.files, true);
+    if (pre.name) m.el.querySelector("#prName").value = pre.name;
+    const m0 = measured.find(x => x.photo === 0); if (m0) m.el.querySelector("#prKnown").value = fmtIn(m0.len);
+    const more = measured.filter(x => x.photo !== 0);
+    if (more.length) m.el.querySelector("#prKnown").closest(".field").insertAdjacentHTML("afterend", `<p class="note" style="margin:0;align-self:end">Also measured: ${more.map(x => `photo ${x.photo + 1}, ${esc(fmtLen(x.len))}`).join("; ")}.</p>`);
+  }
   const drop = m.el.querySelector("#prDrop");
   drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
   drop.addEventListener("dragleave", () => drop.classList.remove("over"));
@@ -1589,7 +1649,7 @@ async function openPhotoRoom() {
     const go = m.el.querySelector("#prGo"), status = m.el.querySelector("#prStatus"); go.disabled = true;
     const known = parseLen(m.el.querySelector("#prKnown").value);
     try {
-      const res = await buildRoomFromPhotos(files, { name: m.el.querySelector("#prName").value.trim(), outdoor: m.el.querySelector("#prOut").checked, nextTo: m.el.querySelector("#prNext").value, known: known && known > 0.3 ? known : null, floor: S.floor }, t => status.textContent = t);
+      const res = await buildRoomFromPhotos(files, { name: m.el.querySelector("#prName").value.trim(), outdoor: m.el.querySelector("#prOut").checked, nextTo: m.el.querySelector("#prNext").value, known: known && known > 0.3 ? known : null, floor: S.floor, labels, measured: measured.filter(x => x.photo !== 0) }, t => status.textContent = t);
       status.textContent = "";
       const r = res.room, b = bbox(r.pts), doors = r.openings.filter(o => o.type === "door").length, wins = r.openings.filter(o => o.type === "window").length, nItems = r.items.length;
       m.el.querySelector("#prResult").innerHTML = `<div class="op"><b>Added ${esc(r.name)}: ${fmtLen(b.w)} × ${fmtLen(b.h)}, ${fmtArea(area(r.pts))}</b>
@@ -1601,6 +1661,244 @@ async function openPhotoRoom() {
       m.el.querySelector("#prDone").onclick = m.close;
     } catch (e) { status.textContent = (e && e.message) || "Something went wrong. Try again."; go.disabled = false; }
   };
+}
+/* ---------- guided capture: camera with a shot list, a level, shot checks and AR measuring ---------- */
+const CAP_STEPS = [
+  { k: "w1", label: "Wall 1", wall: true, tip: "Stand against the opposite wall and get this whole wall in: floor to ceiling, corner to corner. Measure this wall if you can." },
+  { k: "w2", label: "Wall 2", wall: true, tip: "Turn right to the next wall and take it the same way." },
+  { k: "w3", label: "Wall 3", wall: true, tip: "Keep turning right. Whole wall, floor to ceiling." },
+  { k: "w4", label: "Wall 4", wall: true, tip: "Last wall. If the room has more walls (an L-shape or an alcove), tap + Wall after this." },
+  { k: "corner", label: "Corners", multi: true, tip: "Stand in a corner and aim at the opposite one, so two walls, the floor and the ceiling show. One shot per corner." },
+  { k: "door", label: "Doors and windows", multi: true, tip: "Each door and window straight on, with some wall either side. Then stand in each doorway and shoot into the next room." },
+  { k: "item", label: "Furniture", multi: true, tip: "Each big item and appliance from the front, a little to one side so its depth shows." }];
+const CAP_LABEL = { corner: "a corner view", door: "a door, window or view into the next room", item: "furniture or an appliance" };
+let arSupport = null;
+async function arSupported() {
+  if (arSupport === null) arSupport = !!(navigator.xr && window.isSecureContext && await navigator.xr.isSessionSupported("immersive-ar").catch(() => false));
+  return arSupport;
+}
+async function openCapture(preset) {
+  if (!S.canWrite) return;
+  if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) DeviceMotionEvent.requestPermission().catch(() => { });
+  const steps = CAP_STEPS.map(s => ({ ...s })), shots = [], lens = {};
+  let cur = 0, stream = null, motion = { tilt: null, upright: null, rot: 0 }, pending = null, closed = false;
+  const root = document.createElement("div"); root.className = "capture"; root.setAttribute("role", "dialog"); root.setAttribute("aria-label", "Take photos of a room");
+  root.innerHTML = `<div class="capview"><video playsinline muted autoplay></video><div class="capgrid" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="caplevel" aria-live="polite"><span class="bar"></span><b></b></div><div class="caprot" hidden>Turn the phone sideways for wall shots</div>
+      <div class="capnocam" hidden><p>The camera can't open here, so photos are taken with your phone's own camera app.</p></div></div>
+    <div class="capside">
+      <div class="captop"><h3 id="capTitle"></h3><button class="xbtn" id="capClose" aria-label="Close">×</button></div>
+      <p class="captip" id="capTip"></p>
+      <div class="caplen" id="capLen" hidden><label class="field">Length of this wall (optional)<input class="num" id="capLenIn" inputmode="decimal" placeholder="${S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.80"}"></label><button class="btn" id="capAR" hidden>Measure with AR</button></div>
+      <div class="capwarn" id="capWarn" hidden></div>
+      <div class="capshoot"><button class="btn" id="capPrev">Back</button><button class="shutter" id="capShoot" aria-label="Take photo"></button><button class="btn" id="capNext">Skip</button></div>
+      <div class="capsteps" id="capSteps"></div>
+      <div class="row"><button class="btn" id="capAddWall">+ Wall</button><span class="grow"></span><button class="btn primary" id="capDone" disabled>Finish</button></div>
+    </div>`;
+  document.body.appendChild(root); document.body.classList.add("capturing");
+  const q = s => root.querySelector(s), video = q("video");
+  // keep the framing grid on the picture itself, not the black bars around it
+  const fitGrid = () => {
+    const g = q(".capgrid"), box = q(".capview").getBoundingClientRect(), vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) { g.style.cssText = ""; return; }
+    const k = Math.min(box.width / vw, box.height / vh), w = vw * k, h = vh * k;
+    g.style.cssText = `left:${(box.width - w) / 2}px;top:${(box.height - h) / 2}px;width:${w}px;height:${h}px;right:auto;bottom:auto`;
+  };
+  video.addEventListener("loadedmetadata", fitGrid); video.addEventListener("resize", fitGrid); window.addEventListener("resize", fitGrid);
+  const fileInp = document.createElement("input"); fileInp.type = "file"; fileInp.accept = "image/*"; fileInp.setAttribute("capture", "environment");
+  const onMotion = e => {
+    const g = e.accelerationIncludingGravity; if (!g || g.x == null) return;
+    const mag = Math.hypot(g.x, g.y, g.z) || 9.81, ang = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+    // tilt of the screen's horizontal against the horizon; sign doesn't matter, so fold into 0-90
+    let t = (Math.atan2(g.x, g.y) * 180 / Math.PI - ang) % 180; if (t < 0) t += 180; motion.tilt = Math.min(t, 180 - t);
+    motion.upright = Math.asin(Math.min(1, Math.abs(g.z) / mag)) * 180 / Math.PI; // 0 = phone held upright
+    const r = e.rotationRate; if (r) motion.rot = Math.max(Math.abs(r.alpha || 0), Math.abs(r.beta || 0), Math.abs(r.gamma || 0));
+    drawLevel();
+  };
+  window.addEventListener("devicemotion", onMotion);
+  const drawLevel = () => {
+    const el = q(".caplevel"); if (motion.tilt == null) { el.hidden = true; return; }
+    el.hidden = false; const st = steps[cur];
+    const level = motion.tilt < 2, upright = !st.wall || motion.upright < 12;
+    el.classList.toggle("ok", level && upright);
+    el.querySelector("b").textContent = !upright ? "Hold the phone upright" : level ? "Level" : `Tilted ${Math.round(motion.tilt)}°`;
+    q(".caprot").hidden = !(st.wall && innerHeight > innerWidth);
+  };
+  const startCam = async () => {
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) return false;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1440 } } });
+      if (closed) { stopCam(); return false; }
+      video.srcObject = stream; await video.play().catch(() => { }); return true;
+    } catch { return false; }
+  };
+  const stopCam = () => { if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; video.srcObject = null; };
+  const close = () => {
+    closed = true; stopCam(); window.removeEventListener("devicemotion", onMotion); window.removeEventListener("resize", fitGrid); document.removeEventListener("keydown", esck);
+    shots.forEach(s => URL.revokeObjectURL(s.url)); root.remove(); document.body.classList.remove("capturing");
+  };
+  const esck = e => { if (e.key === "Escape" && !document.querySelector(".armeasure")) close(); };
+  document.addEventListener("keydown", esck);
+  const stepShots = k => shots.filter(s => s.step === k);
+  const render = () => {
+    const st = steps[cur], n = stepShots(st.k).length;
+    q("#capTitle").textContent = `${st.label}${st.multi && n ? ` · ${n} taken` : ""}`;
+    q("#capTip").textContent = st.tip;
+    q("#capLen").hidden = !st.wall;
+    if (st.wall) q("#capLenIn").value = lens[st.k] ? fmtIn(lens[st.k]) : "";
+    q("#capPrev").disabled = cur === 0;
+    q("#capNext").textContent = cur === steps.length - 1 ? "Done" : (st.multi ? (n ? "Next" : "Skip") : (n ? "Next" : "Skip"));
+    q("#capAddWall").hidden = !st.wall;
+    q("#capSteps").innerHTML = steps.map((s, i) => {
+      const ss = stepShots(s.k), last = ss[ss.length - 1];
+      return `<button class="capstep" data-i="${i}" aria-current="${i === cur}">${last ? `<img src="${last.url}" alt="">` : `<span class="dot"></span>`}<span>${esc(s.label)}${ss.length > 1 ? ` (${ss.length})` : ""}${ss.some(x => x.warn.length) ? " ⚠" : ss.length ? " ✓" : ""}</span></button>`;
+    }).join("");
+    q("#capSteps").querySelectorAll("[data-i]").forEach(b => b.onclick = () => { cur = +b.dataset.i; clearWarn(); render(); });
+    const total = shots.length; q("#capDone").disabled = !total; q("#capDone").textContent = total ? `Finish (${total} photo${total > 1 ? "s" : ""})` : "Finish";
+    drawLevel();
+  };
+  const clearWarn = () => { pending = null; q("#capWarn").hidden = true; };
+  const showWarn = shot => {
+    pending = shot; const w = q("#capWarn"); w.hidden = false;
+    w.innerHTML = `<img src="${shot.url}" alt="The photo just taken"><div><b>${esc(shot.warn.join(" "))}</b><div class="row"><button class="btn primary" id="capRetake">Retake</button><button class="btn" id="capKeep">Keep it</button></div></div>`;
+    w.querySelector("#capRetake").onclick = () => { shots.splice(shots.indexOf(shot), 1); URL.revokeObjectURL(shot.url); clearWarn(); render(); };
+    w.querySelector("#capKeep").onclick = () => { clearWarn(); advance(); render(); };
+  };
+  const advance = () => { if (!steps[cur].multi && cur < steps.length - 1) cur++; };
+  const addShot = async (blob, m) => {
+    const st = steps[cur];
+    if (!st.multi) stepShots(st.k).forEach(s => { shots.splice(shots.indexOf(s), 1); URL.revokeObjectURL(s.url); }); // retaking a wall replaces it
+    const shot = { step: st.k, blob, url: URL.createObjectURL(blob), warn: [] };
+    shots.push(shot);
+    shot.warn = await shotCheck(blob, m, st.wall).catch(() => []);
+    if (shot.warn.length) { render(); showWarn(shot); }
+    else { toast("Saved", 900); advance(); render(); }
+  };
+  q("#capShoot").onclick = async () => {
+    if (pending) clearWarn();
+    if (!stream || !video.videoWidth) { fileInp.value = ""; fileInp.click(); return; }
+    const m = { ...motion }, c = document.createElement("canvas"); c.width = video.videoWidth; c.height = video.videoHeight;
+    c.getContext("2d").drawImage(video, 0, 0);
+    root.classList.add("flash"); setTimeout(() => root.classList.remove("flash"), 150);
+    const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.9));
+    if (blob) addShot(blob, m);
+  };
+  fileInp.onchange = () => { const f = fileInp.files[0]; if (f) addShot(f, {}); };
+  q("#capNext").onclick = () => { clearWarn(); if (cur < steps.length - 1) { cur++; render(); } else finish(); };
+  q("#capPrev").onclick = () => { clearWarn(); if (cur > 0) { cur--; render(); } };
+  q("#capAddWall").onclick = () => {
+    const nw = steps.filter(s => s.wall).length; if (nw >= 12) return;
+    const at = steps.findIndex(s => !s.wall);
+    steps.splice(at, 0, { k: "w" + (nw + 1) + "_" + uid(), label: `Wall ${nw + 1}`, wall: true, tip: "Keep turning right. Whole wall, floor to ceiling." });
+    cur = at; clearWarn(); render();
+  };
+  q("#capLenIn").onchange = e => { const v = parseLen(e.target.value), k = steps[cur].k; if (v && v > 0.3 && v < 40) lens[k] = v; else { delete lens[k]; if (e.target.value.trim()) toast("That length wasn't understood."); } };
+  q("#capAR").onclick = async () => {
+    const k = steps[cur].k; stopCam();
+    try { const v = await arMeasure(); if (v) { lens[k] = Math.round(v * 100) / 100; toast(`Measured ${fmtLen(lens[k])}`); } }
+    catch (e) { toast("AR measuring couldn't start on this phone. Type the length instead."); }
+    if (!closed) { await startCam(); render(); }
+  };
+  q("#capClose").onclick = () => { if (!shots.length || confirm("Close and throw away the photos you've taken?")) close(); };
+  const finish = () => {
+    if (!shots.length) { close(); return; }
+    const order = steps.map(s => s.k), files = [], labels = [], measured = [];
+    const sorted = shots.slice().sort((a, b) => order.indexOf(a.step) - order.indexOf(b.step));
+    const t0 = Date.now();
+    sorted.forEach((s, i) => {
+      const st = steps.find(x => x.k === s.step);
+      files.push(new File([s.blob], `${st.label.toLowerCase().replace(/\W+/g, "-")}-${i + 1}.jpg`, { type: "image/jpeg", lastModified: t0 + i }));
+      labels.push(st.wall ? `${st.label.toLowerCase()}, taken straight on` : CAP_LABEL[st.k]);
+      if (st.wall && lens[st.k]) measured.push({ photo: i, len: lens[st.k] });
+    });
+    close();
+    openPhotoRoom({ files, labels, measured, name: preset && preset.name });
+  };
+  q("#capDone").onclick = finish;
+  render();
+  const camOK = await startCam();
+  if (!camOK && !closed) { q(".capnocam").hidden = false; q("#capShoot").setAttribute("aria-label", "Take photo with the camera app"); }
+  if (await arSupported() && !closed) q("#capAR").hidden = false;
+}
+/* quick checks on a photo: dark, washed out, blurry, not level, moving */
+async function shotCheck(blob, m, wall) {
+  const out = [];
+  const bmp = await createImageBitmap(blob), bw = bmp.width, bh = bmp.height, W = 320, H = Math.max(1, Math.round(bh * W / bw));
+  const c = document.createElement("canvas"); c.width = W; c.height = H; const x = c.getContext("2d", { willReadFrequently: true });
+  x.drawImage(bmp, 0, 0, W, H); if (bmp.close) bmp.close();
+  const bmp2 = await createImageBitmap(blob);
+  const d = x.getImageData(0, 0, W, H).data, g = new Float32Array(W * H);
+  let sum = 0; for (let i = 0; i < W * H; i++) { g[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2]; sum += g[i]; }
+  const mean = sum / (W * H);
+  // sharpness: the strongest edges (top 1% of the Laplacian) stay strong in a sharp photo even of a plain wall
+  // measured on a full-resolution crop from the middle, since shrinking the photo hides blur
+  const cw = Math.min(640, bw), ch = Math.min(480, bh), c2 = document.createElement("canvas"); c2.width = cw; c2.height = ch;
+  const x2 = c2.getContext("2d", { willReadFrequently: true }); x2.drawImage(bmp2, (bw - cw) / 2, (bh - ch) / 2, cw, ch, 0, 0, cw, ch); if (bmp2.close) bmp2.close();
+  const d2 = x2.getImageData(0, 0, cw, ch).data, g2 = new Float32Array(cw * ch);
+  for (let i = 0; i < cw * ch; i++) g2[i] = 0.299 * d2[i * 4] + 0.587 * d2[i * 4 + 1] + 0.114 * d2[i * 4 + 2];
+  const lap = []; for (let y = 1; y < ch - 1; y++) for (let xx = 1; xx < cw - 1; xx++) { const i = y * cw + xx; lap.push(Math.abs(4 * g2[i] - g2[i - 1] - g2[i + 1] - g2[i - cw] - g2[i + cw])); }
+  lap.sort((a, b) => b - a); const edge = lap[Math.floor(lap.length * 0.01)] || 0;
+  if (mean < 50) out.push("This photo is quite dark. Turn the lights on if you can.");
+  else if (mean > 235) out.push("This photo is washed out. Try not to face a bright window.");
+  if (edge < 12 && mean >= 50) out.push("This photo looks blurry.");
+  else if (m.rot > 60) out.push("The phone was moving, so it may be blurred.");
+  if (wall && m.tilt != null && m.tilt > 5) out.push(`The phone was tilted ${Math.round(m.tilt)}°.`);
+  if (wall && bh > bw * 1.05) out.push("Sideways (landscape) shots get more of the wall in.");
+  return out;
+}
+/* AR tape measure (WebXR with hit-test, Chrome on ARCore phones): tap two points on the floor */
+async function arMeasure() {
+  const ov = document.createElement("div"); ov.className = "armeasure";
+  ov.innerHTML = `<div class="artop"><b id="arMsg">Move the phone slowly over the floor until a ring appears.</b></div><div class="arcross" aria-hidden="true"></div>
+    <div class="arbot"><span class="num" id="arLen"></span><div class="row"><button class="btn" id="arCancel">Cancel</button><button class="btn" id="arReset">Start again</button><button class="btn primary" id="arUse" disabled>Use this length</button></div></div>`;
+  document.body.appendChild(ov);
+  let session;
+  try { session = await navigator.xr.requestSession("immersive-ar", { requiredFeatures: ["hit-test"], optionalFeatures: ["dom-overlay"], domOverlay: { root: ov } }); }
+  catch (e) { ov.remove(); throw e; }
+  ov.querySelectorAll("button").forEach(b => b.addEventListener("beforexrselect", e => e.preventDefault()));
+  const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+  renderer.setPixelRatio(devicePixelRatio); renderer.setSize(innerWidth, innerHeight); renderer.xr.enabled = true; renderer.xr.setReferenceSpaceType("local");
+  await renderer.xr.setSession(session);
+  const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera();
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 1));
+  const reticle = new THREE.Mesh(new THREE.RingGeometry(0.04, 0.055, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x55C19A }));
+  reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
+  const dotGeo = new THREE.SphereGeometry(0.015, 16, 12), dotMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff }), lineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+  const line = new THREE.Line(lineGeo, lineMat); line.visible = false; scene.add(line);
+  const viewer = await session.requestReferenceSpace("viewer"), hts = await session.requestHitTestSource({ space: viewer });
+  const pts = [], dots = []; let result = null, len = null;
+  const msg = t => ov.querySelector("#arMsg").textContent = t;
+  // walls are measured along the floor, so ignore height differences
+  const flat = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+  const reset = () => { pts.length = 0; dots.forEach(d => scene.remove(d)); dots.length = 0; line.visible = false; len = null; ov.querySelector("#arLen").textContent = ""; ov.querySelector("#arUse").disabled = true; };
+  session.addEventListener("select", () => {
+    if (!reticle.visible) return;
+    if (pts.length === 2) reset();
+    const p = new THREE.Vector3().setFromMatrixPosition(reticle.matrix); pts.push(p);
+    const dot = new THREE.Mesh(dotGeo, dotMat); dot.position.copy(p); scene.add(dot); dots.push(dot);
+    if (pts.length === 2) { len = flat(pts[0], pts[1]); ov.querySelector("#arUse").disabled = false; msg("Happy with it? Tap Use this length, or tap the floor to measure again."); }
+  });
+  ov.querySelector("#arReset").onclick = reset;
+  ov.querySelector("#arUse").onclick = () => { result = len; session.end(); };
+  ov.querySelector("#arCancel").onclick = () => session.end();
+  renderer.setAnimationLoop((t, frame) => {
+    if (!frame) return;
+    const hits = frame.getHitTestResults(hts), ref = renderer.xr.getReferenceSpace();
+    const pose = hits.length && hits[0].getPose(ref);
+    reticle.visible = !!pose; if (pose) reticle.matrix.fromArray(pose.transform.matrix);
+    if (pts.length === 0) msg(pose ? "Aim at the floor in one corner of the wall, right against the skirting, and tap." : "Move the phone slowly over the floor until a ring appears.");
+    if (pts.length === 1) {
+      if (pose) msg("Now aim at the other corner of the wall and tap.");
+      const p = pose ? new THREE.Vector3().setFromMatrixPosition(reticle.matrix) : null;
+      if (p) { lineGeo.setFromPoints([pts[0], p]); line.visible = true; ov.querySelector("#arLen").textContent = fmtLen(flat(pts[0], p)); }
+    }
+    if (pts.length === 2) { lineGeo.setFromPoints(pts); line.visible = true; ov.querySelector("#arLen").textContent = fmtLen(len); }
+    renderer.render(scene, camera);
+  });
+  return new Promise(res => session.addEventListener("end", () => {
+    renderer.setAnimationLoop(null); hts.cancel && hts.cancel(); renderer.dispose(); ov.remove(); res(result);
+  }));
 }
 async function buildRoomFromPhotos(files, opt, progress) {
   const photos = [], aiBlobs = [];
@@ -1624,6 +1922,8 @@ async function buildRoomFromPhotos(files, opt, progress) {
 Rooms already drawn on this floor: ${existing.length ? existing.map(r => `"${r.name}"`).join(", ") : "none yet"}.
 ${opt.name ? `The user calls this room "${opt.name}".` : `Suggest a short name for the room, such as Kitchen, Bedroom 2 or Hall, that is not already in the list above.`}
 ${opt.known ? `The main wall facing the camera in photo 1 is ${opt.known.toFixed(2)} m long, measured with a tape. Use it as the scale.` : ""}
+${(opt.measured || []).filter(x => x.photo < n).map(x => `The main wall facing the camera in photo ${x.photo + 1} is ${x.len.toFixed(2)} m long, measured.`).join(" ")}
+${opt.labels ? `The user took these with a guide that labels each photo: ${opt.labels.slice(0, n).map((l, i) => `photo ${i + 1} is ${l}`).join("; ")}. The wall photos go round the room clockwise; the other photos are extra views to help you place doors, windows and items.` : ""}
 Work out the room's outline. Walk around the walls clockwise as seen from above, starting at the left end of the main wall facing the camera in photo 1, so wall 0 is that wall. For each wall give its length and whether you turn right ("R", an ordinary corner like in a rectangle) or left ("L", an inward corner like in an L-shaped room) at its end. A rectangular room has 4 walls, all "R". An L-shaped room has 6 walls, five "R" and one "L". Ignore small recesses, chimney breasts and bay windows under 0.4 m deep.
 For scale, use any measured length first, then objects of standard size: interior doors are about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high and 0.60 m deep, light switches about 1.2 m up, sockets about 0.3 m up, beds about 1.9 to 2.0 m long, and floor tiles and boards of standard sizes. Typical ceilings are 2.3 to 2.7 m.
 ${ITEM_PROMPT}
@@ -1643,23 +1943,27 @@ photo_walls lists, for each photo in order, the number of the wall it mainly sho
   const r = rect(opt.name || (est && typeof est.name === "string" && est.name.trim().slice(0, 40)) || (opt.outdoor ? "Garden" : `Room ${existing.length + 1}`), opt.floor, 0, 0, 3.5, 3, S.plan.rooms.length % 7);
   const pts = est && polyFromWalls(est.walls);
   if (pts) r.pts = pts;
+  // a tape-measured wall 1 sets the scale of the whole room, not just that wall
+  let f = 1;
+  if (est && opt.known && r.pts.length >= 4 && Array.isArray(est.walls) && +(est.walls[0] || {}).length_m > 0) { f = opt.known / +est.walls[0].length_m; if (f > 0.4 && f < 2.5) r.pts = r.pts.map(([x, y]) => [r2(x * f), r2(y * f)]); else f = 1; }
   else if (est && Array.isArray(est.walls) && est.walls.length >= 2) { const w = +est.walls[0].length_m || 3.5, d = +est.walls[1].length_m || 3; r.pts = [[0, 0], [w, 0], [w, d], [0, d]].map(p => [r2(p[0]), r2(p[1])]); }
   if (est && est.ceiling_height_m > 1.8 && est.ceiling_height_m < 6) r.height = Math.round(est.ceiling_height_m * 100) / 100;
   const nE = r.pts.length;
   if (est && Array.isArray(est.openings)) {
     for (const o of est.openings) {
       if (!(o && (o.type === "door" || o.type === "window") && Number.isInteger(o.wall) && o.wall >= 0 && o.wall < nE && o.width_m > 0.2)) continue;
-      const op = o.type === "door" ? door(o.wall, +o.offset_m || 0.2, +o.width_m, { height: +o.height_m || 2.03 }) : win(o.wall, +o.offset_m || 0.2, +o.width_m, { height: +o.height_m || 1.2, sill: o.sill_m != null ? +o.sill_m : 0.9 });
+      const op = o.type === "door" ? door(o.wall, (+o.offset_m || 0.2) * f, +o.width_m, { height: +o.height_m || 2.03 }) : win(o.wall, (+o.offset_m || 0.2) * f, +o.width_m, { height: +o.height_m || 1.2, sill: o.sill_m != null ? +o.sill_m : 0.9 });
       if (o.type === "door" && o.leads_to) op.leadsTo = String(o.leads_to).slice(0, 40);
       clampOpening(r, op); r.openings.push(op);
     }
   }
   if (opt.outdoor || (est && est.outdoor === true)) { r.kind = "outdoor"; r.openings = []; r.height = null; r.c = 5; }
-  r.items = parseItems(est && est.items, nE); r.items.forEach(it => clampItem(r, it));
+  r.items = parseItems(est && est.items, nE); r.items.forEach(it => { it.along *= f; it.out *= f; clampItem(r, it); });
   const pw = est && Array.isArray(est.photo_walls) ? est.photo_walls : null;
   photos.forEach((p, i) => { const w = pw ? pw[i] : (est ? null : i); p.wall = Number.isInteger(w) && w >= 0 && w < nE ? w : null; });
   r.photos = photos;
   if (opt.known && setEdgeLength(r, 0, opt.known)) r.measured[0] = true;
+  for (const mz of opt.measured || []) { const w = photos[mz.photo] && photos[mz.photo].wall; if (Number.isInteger(w) && !(w === 0 && opt.known) && setEdgeLength(r, w, mz.len)) r.measured[w] = true; }
   r.openings.forEach(o => clampOpening(r, o));
   // which room does it connect to?
   let nb = opt.nextTo ? existing.find(x => x.id === opt.nextTo) : null;
@@ -1900,8 +2204,8 @@ $("#projInput").addEventListener("change", async e => {
 
 /* ---------- wire up ---------- */
 $("#addRect").onclick = () => addRoom("rect");
-$("#addPhotoRoom").onclick = openPhotoRoom;
-$("#emptyPhotoRoom").onclick = openPhotoRoom;
+$("#addPhotoRoom").onclick = () => openPhotoRoom();
+$("#emptyPhotoRoom").onclick = () => openPhotoRoom();
 $("#addL").onclick = () => addRoom("L");
 document.querySelectorAll("[data-layers]").forEach(b => b.addEventListener("click", e => {
   e.stopPropagation(); const pop = $("#layersPop"); pop.hidden = !pop.hidden;
