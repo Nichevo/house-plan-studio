@@ -337,7 +337,7 @@ svg.facmove{cursor:move}
       <label><input type="checkbox" data-ly="furn"> Furniture</label>
       <label><input type="checkbox" data-ly="garden"> Garden and outdoor</label>
       <label><input type="checkbox" data-ly="photos"> Photos</label>
-      <label data-only="2d"><input type="checkbox" data-ly="site"> Site photo</label>
+      <label><input type="checkbox" data-ly="site"> Site photos</label>
       <label data-only="3d"><input type="checkbox" data-ly="facades"> House-side photos</label>
       <span class="note" data-only="2d">Photos appear as camera dots on the walls. Tap one to see it.</span>
       <span class="note" data-only="3d">Photos are shown on the walls they were tagged to.</span>
@@ -1503,6 +1503,7 @@ function build3D(opts) {
     group.add(fg);
   });
   if (opts.mode === "all" && L.facades !== false && opts.photos !== false) facadeMeshes().forEach(m => group.add(m));
+  if (L.site !== false && opts.photos !== false && (opts.mode !== "current" || S.floor === S.plan.floors[0].id)) siteMeshes().forEach(m => group.add(m));
   return group;
 }
 /* a photo fitted to a wall: centre-cropped to the wall's shape, loaded once and reused */
@@ -2550,6 +2551,16 @@ function facadeMeshes() {
     m.name = SIDE[side].name + " photo"; out.push(m);
   }
   return out;
+}
+/* site photos lie flat on the ground under the model */
+function siteMeshes() {
+  return (S.plan.sites || []).filter(st => !st.hidden && photoURL(st) && (st.floor === "all" || st.floor === S.plan.floors[0].id)).map((st, i) => {
+    const W = st.w * st.mpp, H = st.h * st.mpp, c = st.crop || [0, 0, 1, 1], cw = (c[2] - c[0]) * W, ch = (c[3] - c[1]) * H;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(cw, ch), new THREE.MeshBasicMaterial({ map: facadeTexture(st), transparent: true, opacity: Math.max(0.6, st.opacity), depthWrite: false }));
+    m.rotation.x = -Math.PI / 2; m.position.set(-W / 2 + (c[0] + c[2]) / 2 * W, 0, -H / 2 + (c[1] + c[3]) / 2 * H);
+    const g = new THREE.Group(); g.add(m); g.position.set(st.x, -0.11 - i * 0.01, st.y); g.rotation.y = -(st.rot || 0) * Math.PI / 180; g.name = st.name || "Site photo"; g.renderOrder = -1;
+    return g;
+  });
 }
 function facadeTexture(f) {
   T3.tex ||= new Map();
