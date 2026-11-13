@@ -254,6 +254,10 @@ body.capturing{overflow:hidden}
 .prpick{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
 .sitebar{position:absolute;left:50%;bottom:calc(12px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:7;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;box-shadow:0 6px 24px rgba(0,0,0,.18);width:min(420px,calc(100% - 24px));font-size:13px}
 .sitebar input[type=range]{flex:1;min-width:80px}
+.facebar{top:12px;bottom:auto}
+.facebar .seg button{padding:6px 10px}
+svg.siding [data-sroom]{cursor:ew-resize}
+svg.facmove{cursor:move}
 #plan.aligning{cursor:move}
 .calwrap{position:relative;background:#000;border-radius:8px;overflow:hidden;touch-action:none}
 .calwrap{height:min(58vh,520px)}
@@ -267,7 +271,7 @@ body.capturing{overflow:hidden}
   <div class="brand"><b id="houseName">House Plan Studio</b><small id="subline">Floor plan from photos and measurements</small></div>
   <div class="seg" id="floorTabs" role="group" aria-label="Floor"></div>
   <div class="seg" role="group" aria-label="View">
-    <button id="v2d" aria-pressed="true">2D plan</button><button id="v3d" aria-pressed="false">3D</button>
+    <button id="v2d" aria-pressed="true">2D plan</button><button id="vside" aria-pressed="false">Sides</button><button id="v3d" aria-pressed="false">3D</button>
   </div>
   <button class="btn" id="undoBtn" title="Undo">Undo</button>
   <button class="btn" id="exportBtn">Export</button>
@@ -299,6 +303,12 @@ body.capturing{overflow:hidden}
       <div class="row"><span>See-through</span><input type="range" id="siteOp" min="0.15" max="1" step="0.05"></div>
       <div class="row"><span class="grow"></span><button class="btn primary" id="siteDone">Done</button></div>
     </div>
+    <div class="sitebar facebar" id="sideBar" hidden>
+      <div class="seg" role="group" aria-label="Side of the house" id="sideTabs"><button data-side="S">Front</button><button data-side="N">Back</button><button data-side="W">Left</button><button data-side="E">Right</button></div>
+      <span class="note" style="margin:0" id="sideNote"></span>
+      <div class="row" id="sideRow1"></div>
+      <div class="row" id="sideRow2"><label class="row" style="gap:4px"><input type="checkbox" id="facShow"> Show</label><span>See-through</span><input type="range" id="facOp" min="0.1" max="1" step="0.05"></div>
+    </div>
     <div class="overlay ov-tl" id="bar3d" hidden>
       <select id="floors3d" aria-label="Floors shown">
         <option value="current">This floor only</option>
@@ -324,6 +334,7 @@ body.capturing{overflow:hidden}
       <label><input type="checkbox" data-ly="garden"> Garden and outdoor</label>
       <label><input type="checkbox" data-ly="photos"> Photos</label>
       <label data-only="2d"><input type="checkbox" data-ly="site"> Site photo</label>
+      <label data-only="3d"><input type="checkbox" data-ly="facades"> House-side photos</label>
       <span class="note" data-only="2d">Photos appear as camera dots on the walls. Tap one to see it.</span>
       <span class="note" data-only="3d">Photos are shown on the walls they were tagged to.</span>
     </div>
@@ -571,7 +582,7 @@ function blankPlan() {
     floors: [{ id: "f0", name: "Ground floor", height: 2.5, slab: 0.25 }, { id: "f1", name: "Upstairs", height: 2.4, slab: 0.25 }], rooms: [] };
 }
 const S = { plan: null, floor: "f0", sel: null, selItem: null, view: "2d", tab: "rooms", undo: [], k: 50, tx: 40, ty: 40, canWrite: true, pendingConfirm: null,
-  layers: (() => { const d = { dims: false, labels: true, app: true, furn: true, garden: true, photos: false, site: true }; try { return { ...d, ...JSON.parse(localStorage.getItem("house-layers") || "{}") }; } catch { return d; } })() };
+  layers: (() => { const d = { dims: false, labels: true, app: true, furn: true, garden: true, photos: false, site: true, facades: true }; try { return { ...d, ...JSON.parse(localStorage.getItem("house-layers") || "{}") }; } catch { return d; } })() };
 const localPhotoURL = {}; // photo id -> object URL (photos kept on this device)
 
 function validPlan(p) { return p && Array.isArray(p.rooms) && Array.isArray(p.floors) && p.floors.length; }
@@ -658,7 +669,7 @@ async function loadLocalPhotos() {
     localPhotoURL[p.id] = null;
     try { const b = await idb.get(p.id); if (b) { localPhotoURL[p.id] = URL.createObjectURL(b); } } catch { }
   }
-  for (const st of S.plan.sites || []) if (st.local && localPhotoURL[st.id] === undefined) { localPhotoURL[st.id] = null; try { const b = await idb.get(st.id); if (b) { localPhotoURL[st.id] = URL.createObjectURL(b); renderPlan(); } } catch { } }
+  for (const st of [...(S.plan.sites || []), ...Object.values(S.plan.facades || {})]) if (st.local && localPhotoURL[st.id] === undefined) { localPhotoURL[st.id] = null; try { const b = await idb.get(st.id); if (b) { localPhotoURL[st.id] = URL.createObjectURL(b); renderPlan(); } } catch { } }
   if (S.tab === "room") renderPane();
 }
 const photoURL = p => p.asset ? "/_blob/" + p.asset : localPhotoURL[p.id] || null;
@@ -803,6 +814,8 @@ function planMarkup(fid, o) {
 }
 function renderPlan() {
   { const zr = document.getElementById("zroom"); if (zr) zr.hidden = !S.sel; }
+  svg.classList.toggle("siding", S.view === "side"); svg.classList.toggle("facmove", S.view === "side" && !!S.facMove);
+  if (S.view === "side") return renderSide();
   if (S.view !== "2d") return;
   const W = svg.clientWidth || 800, H = svg.clientHeight || 600, k = S.k;
   const x0 = -S.tx / k, y0 = -S.ty / k, x1 = x0 + W / k, y1 = y0 + H / k;
@@ -844,6 +857,16 @@ svg.addEventListener("pointerdown", e => {
     drag = null; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], k: S.k, tx: S.tx, ty: S.ty };
     return;
   }
+  if (S.view === "side") {
+    const p0 = toM(e.clientX, e.clientY), sc = [e.clientX, e.clientY], f = facades()[S.side], el = e.target.closest("[data-sroom]");
+    if (S.facMove && f && S.canWrite) drag = { type: "fac", p0, sc, start: [f.u, f.z], before: JSON.stringify(S.plan), moved: false };
+    else if (el && S.canWrite) {
+      const id = el.dataset.sroom, r = S.plan.rooms.find(x => x.id === id);
+      if (S.sel !== id) { S.sel = id; S.tab = "room"; if (r.floor !== S.floor) S.floor = r.floor; renderAll(); }
+      drag = { type: "sroom", id, p0, sc, start: clone(r.pts), before: JSON.stringify(S.plan), moved: false };
+    } else drag = { type: "pan", sc, tx: S.tx, ty: S.ty, moved: false };
+    return;
+  }
   if (alignSite()) { const st = alignSite(); drag = { type: "site", sc: [e.clientX, e.clientY], p0: toM(e.clientX, e.clientY), start: [st.x, st.y], before: JSON.stringify(S.plan), moved: false }; return; }
   const edgeEl = e.target.closest("[data-edge]"), roomEl = e.target.closest("[data-room]"), camEl = e.target.closest("[data-photo]"), itemEl = e.target.closest("[data-item]");
   const p0 = toM(e.clientX, e.clientY), sc = [e.clientX, e.clientY];
@@ -879,6 +902,15 @@ svg.addEventListener("pointermove", e => {
   if (!drag.moved && ds < 4) return;
   drag.moved = true;
   if (drag.type === "pan") { S.tx = drag.tx + e.clientX - drag.sc[0]; S.ty = drag.ty + e.clientY - drag.sc[1]; renderPlan(); return; }
+  if (drag.type === "fac") { const f = facades()[S.side]; if (!f) return; const p = toM(e.clientX, e.clientY); f.u = r2(drag.start[0] + p[0] - drag.p0[0]); f.z = r2(drag.start[1] - (p[1] - drag.p0[1])); renderPlan(); return; }
+  if (drag.type === "sroom") {
+    const r = S.plan.rooms.find(x => x.id === drag.id); if (!r) return;
+    const ax = SIDE[S.side], p = toM(e.clientX, e.clientY), us = drag.start.map(ax.u), lo = Math.min(...us), hi = Math.max(...us), thr = Math.max(0.06, 10 / S.k);
+    let du = p[0] - drag.p0[0], best = null, bd = thr;
+    for (const o of S.plan.rooms) { if (o.id === r.id || isOut(o)) continue; const ou = o.pts.map(ax.u); for (const t of [Math.min(...ou), Math.max(...ou)]) for (const v of [lo, hi]) { const d = Math.abs(v + du - t); if (d < bd) { bd = d; best = t - v; } } }
+    du = best != null ? best : Math.round(du / 0.05) * 0.05;
+    const [dx, dy] = ax.d(du); r.pts = drag.start.map(([x, y]) => [r2(x + dx), r2(y + dy)]); renderPlan(); return;
+  }
   if (drag.type === "site") { const st = alignSite(); if (!st) return; const p = toM(e.clientX, e.clientY); st.x = r2(drag.start[0] + p[0] - drag.p0[0]); st.y = r2(drag.start[1] + p[1] - drag.p0[1]); renderPlan(); return; }
   const r = S.plan.rooms.find(x => x.id === drag.id); if (!r) return;
   const p = toM(e.clientX, e.clientY), dx = p[0] - drag.p0[0], dy = p[1] - drag.p0[1], thr = Math.max(0.06, 10 / S.k), grid = S.k > 60 ? 0.05 : 0.1;
@@ -919,7 +951,7 @@ function endPointer(e) {
   const d = drag; drag = null;
   if (d.type === "pan" && !d.moved) { if (S.sel) { S.sel = null; if (S.tab === "room") S.tab = "rooms"; renderAll(); } return; }
   if (d.type === "item") { if (d.moved) commit(d.before); else renderPane(); return; }
-  if (d.type === "site") { if (d.moved) commit(d.before); return; }
+  if (d.type === "site" || d.type === "fac" || d.type === "sroom") { if (d.moved) commit(d.before); return; }
   if ((d.type === "room" || d.type === "edge") && d.moved) {
     const r = S.plan.rooms.find(x => x.id === d.id);
     if (d.type === "edge" && r) { const n = r.pts.length; delete r.measured[(d.i + n - 1) % n]; delete r.measured[(d.i + 1) % n]; }
@@ -1332,12 +1364,12 @@ function renderTop() {
   $("#floorTabs").innerHTML = S.plan.floors.map(f => `<button data-floor="${f.id}" aria-pressed="${f.id === S.floor}">${esc(f.name)}</button>`).join("");
   $("#exampleBanner").hidden = !S.plan.example || !S.canWrite;
   $("#undoBtn").disabled = !S.undo.length;
-  $("#addBar").hidden = S.view !== "2d" || !S.canWrite; $("#zoomBar").hidden = S.view !== "2d"; $("#hint").hidden = S.view !== "2d";
+  $("#addBar").hidden = S.view !== "2d" || !S.canWrite; $("#zoomBar").hidden = S.view === "3d"; $("#sideBar").hidden = S.view !== "side"; if (S.view === "side") renderSideBar(); $("#hint").hidden = S.view !== "2d";
   $("#bar3d").hidden = S.view !== "3d";
   document.querySelectorAll("#layersPop [data-only]").forEach(el => el.hidden = el.dataset.only !== S.view);
   document.querySelectorAll("#layersPop [data-ly]").forEach(el => el.checked = !!S.layers[el.dataset.ly]);
   $("#emptyFloor").hidden = S.view !== "2d" || !S.canWrite || roomsOn(S.floor).length > 0;
-  $("#v2d").setAttribute("aria-pressed", S.view === "2d"); $("#v3d").setAttribute("aria-pressed", S.view === "3d");
+  $("#v2d").setAttribute("aria-pressed", S.view === "2d"); $("#v3d").setAttribute("aria-pressed", S.view === "3d"); $("#vside").setAttribute("aria-pressed", S.view === "side");
 }
 $("#floorTabs").addEventListener("click", e => { const b = e.target.closest("[data-floor]"); if (!b) return; S.floor = b.dataset.floor; const r = selRoom(); if (r && r.floor !== S.floor) S.sel = null; renderAll(); });
 function renderAll() { fixFloor(); renderTop(); renderPlan(); renderPane(); if (S.view === "3d") schedule3D(); }
@@ -1435,6 +1467,7 @@ function build3D(opts) {
     }
     group.add(fg);
   });
+  if (opts.mode === "all" && L.facades !== false && opts.photos !== false) facadeMeshes().forEach(m => group.add(m));
   return group;
 }
 /* a photo fitted to a wall: centre-cropped to the wall's shape, loaded once and reused */
@@ -1494,7 +1527,16 @@ function fit3D(top) {
   if (top) T3.camera.position.set(c.x, c.y + R * 1.6, c.z + 0.01); else T3.camera.position.set(c.x + R * 0.75, c.y + R * 0.9, c.z + R * 1.05);
   T3.camera.updateProjectionMatrix(); T3.controls.update();
 }
-function setView(v) { S.view = v; $("#plan").hidden = v !== "2d"; $("#three").hidden = v !== "3d"; renderAll(); if (v === "3d") { requestAnimationFrame(() => { size3D(); rebuild3D(); }); } }
+function setView(v) {
+  const was = S.view; if (was === v) return;
+  if (was === "2d") S.planView = { k: S.k, tx: S.tx, ty: S.ty }; else if (was === "side") S.sideView = { k: S.k, tx: S.tx, ty: S.ty };
+  if (S.siteAlign && v !== "2d") endSiteAlign();
+  S.view = v; $("#plan").hidden = v === "3d"; $("#three").hidden = v !== "3d";
+  if (v === "2d" && S.planView) Object.assign(S, S.planView);
+  if (v === "side") { if (S.sideView) Object.assign(S, S.sideView); else fitSide(); }
+  renderAll(); if (v === "3d") { requestAnimationFrame(() => { size3D(); rebuild3D(); }); }
+}
+$("#vside").onclick = () => setView("side");
 $("#v2d").onclick = () => setView("2d");
 $("#v3d").onclick = () => setView("3d");
 $("#floors3d").onchange = () => { rebuild3D(); fit3D(); };
@@ -2163,10 +2205,10 @@ async function openSite() {
     box.querySelector("[data-sdel]").onclick = async () => { const old = st(); m.close(); edit(() => { S.plan.sites = sites().filter(x => x.id !== id); }); try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } };
   });
 }
-function calibrateSite(ns, old) {
+function calibrateSite(ns, old, opt = {}) {
   const url = photoURL(ns); if (!url) { toast("The photo couldn't be loaded."); return; }
   const m = modal("Set the scale", `
-    <p style="margin:0">Mark the two ends of something whose length you know: the map's scale bar, or a wall you've measured. Pinch or use + to zoom in, drag to move around, and drag a dot to fine-tune it.</p>
+    <p style="margin:0">${opt.intro || "Mark the two ends of something whose length you know: the map's scale bar, or a wall you've measured."} Pinch or use + to zoom in, drag to move around, and drag a dot to fine-tune it.</p>
     <div class="calwrap"><canvas id="calCv"></canvas><div class="calzoom"><button id="calIn" aria-label="Zoom in">+</button><button id="calOut" aria-label="Zoom out">−</button><button id="calFit" aria-label="Show whole photo" style="font-size:13px">Fit</button></div></div>
     <div class="grid2"><label class="field">Real length between the two points<input class="num" id="calLen" inputmode="decimal" placeholder="${S.plan.units === "ft" ? `e.g. 50'` : "e.g. 20"}"></label><span class="note" id="calPx" style="align-self:end"></span></div>
     <div class="row"><button class="btn" id="calReset">Start again</button><span class="grow"></span><button class="btn primary" id="calGo" disabled>Next: line it up</button></div>`, true);
@@ -2240,6 +2282,7 @@ function calibrateSite(ns, old) {
   m.el.querySelector("#calGo").onclick = () => {
     const L = parseLen(m.el.querySelector("#calLen").value), px = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) * ns.w / img.naturalWidth;
     ns.mpp = L / px;
+    if (opt.done) { m.close(); opt.done(ns.mpp); return; }
     if (!old) { // new photo: start it over the last site photo, or the middle of this floor's rooms
       const prev = sites()[sites().length - 1], rs = roomsOn(ns.floor === "all" ? S.floor : ns.floor), b = rs.length ? bbox(rs.flatMap(r => r.pts)) : null;
       if (prev) { ns.x = prev.x; ns.y = prev.y; ns.rot = prev.rot; } else { ns.x = b ? r2(b.x0 + b.w / 2) : 0; ns.y = b ? r2(b.y0 + b.h / 2) : 0; }
@@ -2253,11 +2296,15 @@ function calibrateSite(ns, old) {
 }
 /* crop a site photo to the part that matters; the scale is unchanged because the crop is stored as fractions of the photo */
 function cropSite(id, thenAlign) {
-  const st = sites().find(x => x.id === id), url = st && photoURL(st); if (!url) return;
+  const st = sites().find(x => x.id === id); if (!st) return;
+  cropPhoto(st, thenAlign ? "Next: line it up" : "Save crop", () => { if (thenAlign) startSiteAlign(id); else renderPlan(); });
+}
+function cropPhoto(st, goLabel, after) {
+  const url = photoURL(st); if (!url) return;
   const m = modal("Crop the photo", `
     <p style="margin:0">Drag the corners (or the middle of the box) to keep just your section. The scale you set stays the same.</p>
     <div class="calwrap"><canvas id="crCv"></canvas></div>
-    <div class="row"><button class="btn" id="crAll">Use whole photo</button><span class="grow"></span><button class="btn primary" id="crGo">${thenAlign ? "Next: line it up" : "Save crop"}</button></div>`, true);
+    <div class="row"><button class="btn" id="crAll">Use whole photo</button><span class="grow"></span><button class="btn primary" id="crGo">${goLabel}</button></div>`, true);
   const cv = m.el.querySelector("#crCv"), ctx = cv.getContext("2d"), img = new Image();
   let c = (st.crop || [0, 0, 1, 1]).slice(), V = { s: 1, x: 0, y: 0 }, g = null;
   const d = () => window.devicePixelRatio || 1;
@@ -2298,10 +2345,129 @@ function cropSite(id, thenAlign) {
     const before = JSON.stringify(S.plan), full = !crop || (crop[0] < 0.005 && crop[1] < 0.005 && crop[2] > 0.995 && crop[3] > 0.995);
     if (full) delete st.crop; else st.crop = crop.map(v => Math.round(v * 10000) / 10000);
     commit(before); m.close();
-    if (thenAlign) startSiteAlign(id); else renderPlan();
+    after();
   };
   m.el.querySelector("#crAll").onclick = () => save(null);
   m.el.querySelector("#crGo").onclick = () => save(c);
+}
+/* ---------- house sides: a photo of each outside face, the rooms seen from that side, and the photo wrapped on the 3D model ---------- */
+// u = across the view, left to right as seen standing outside that side; near = larger is closer to the viewer; d(du) = plan move for a move of du along u
+const SIDE = {
+  S: { name: "Front", long: "front (bottom of the plan)", u: p => p[0], near: p => p[1], d: du => [du, 0] },
+  N: { name: "Back", long: "back (top of the plan)", u: p => -p[0], near: p => -p[1], d: du => [-du, 0] },
+  W: { name: "Left", long: "left side (left of the plan)", u: p => p[1], near: p => -p[0], d: du => [0, du] },
+  E: { name: "Right", long: "right side (right of the plan)", u: p => -p[1], near: p => p[0], d: du => [0, -du] },
+};
+S.side = "S";
+const facades = () => S.plan.facades || (S.plan.facades = {});
+const houseRooms = () => S.plan.rooms.filter(r => !isOut(r));
+function sideExtent(side) {
+  const ax = SIDE[side], rs = houseRooms();
+  if (!rs.length) return { u0: -5, u1: 5, top: 5 };
+  const us = rs.flatMap(r => r.pts.map(ax.u)), top = Math.max(...rs.map(r => floorElev(r.floor) + roomH(r)));
+  return { u0: Math.min(...us), u1: Math.max(...us), top };
+}
+function fitSide(roomId) {
+  const W = svg.clientWidth || 800, H = svg.clientHeight || 600, ax = SIDE[S.side];
+  let { u0, u1, top } = sideExtent(S.side), z0 = 0;
+  const r = roomId && S.plan.rooms.find(x => x.id === roomId);
+  if (r) { const us = r.pts.map(ax.u); u0 = Math.min(...us); u1 = Math.max(...us); z0 = floorElev(r.floor); top = z0 + roomH(r); }
+  const f = facades()[S.side];
+  if (f && !r && !f.hidden && photoURL(f)) { const fw = f.w * f.mpp, fh = f.h * f.mpp; u0 = Math.min(u0, f.u - fw / 2); u1 = Math.max(u1, f.u + fw / 2); top = Math.max(top, f.z + fh / 2); z0 = Math.min(z0, f.z - fh / 2); }
+  const padT = 150, pad = 40, w = Math.max(1, u1 - u0), h = Math.max(1, top - z0);
+  S.k = Math.max(2, Math.min(200, Math.min((W - pad * 2) / w, (H - padT - pad) / h)));
+  S.tx = (W - w * S.k) / 2 - u0 * S.k; S.ty = padT + (H - padT - pad - h * S.k) / 2 + top * S.k;
+}
+function facadeMarkup(f) {
+  const W = f.w * f.mpp, H = f.h * f.mpp, c = f.crop, x = f.u - W / 2, y = -f.z - H / 2;
+  const clip = c ? `<clipPath id="fc-${f.id}"><rect x="${x + c[0] * W}" y="${y + c[1] * H}" width="${(c[2] - c[0]) * W}" height="${(c[3] - c[1]) * H}"/></clipPath>` : "";
+  return `${clip}<image href="${esc(photoURL(f))}" x="${x}" y="${y}" width="${W}" height="${H}" opacity="${f.opacity}" preserveAspectRatio="none" pointer-events="none"${c ? ` clip-path="url(#fc-${f.id})"` : ""}/>`;
+}
+function renderSide() {
+  const W = svg.clientWidth || 800, H = svg.clientHeight || 600, k = S.k, ax = SIDE[S.side];
+  const x0 = -S.tx / k, y0 = -S.ty / k, x1 = x0 + W / k, y1 = y0 + H / k, lines = [];
+  for (let x = Math.floor(x0); x <= x1; x++) lines.push(`<line class="gminor" x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke-width="${1 / k}"/>`);
+  for (let y = Math.floor(y0); y <= Math.min(y1, 0); y++) lines.push(`<line class="gminor" x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke-width="${1 / k}"/>`);
+  const ground = `<rect x="${x0}" y="0" width="${x1 - x0}" height="${Math.max(0, y1)}" fill="#8a7a5e" opacity=".18"/><line x1="${x0}" y1="0" x2="${x1}" y2="0" stroke="#5b4b33" stroke-width="${2 / k}"/>`;
+  const f = facades()[S.side], photo = f && (!f.hidden || S.facMove) && photoURL(f) ? facadeMarkup(f) : "";
+  const rs = houseRooms().map(r => { const us = r.pts.map(ax.u), z0 = floorElev(r.floor); return { r, u0: Math.min(...us), u1: Math.max(...us), z0, z1: z0 + roomH(r), near: Math.max(...r.pts.map(ax.near)) }; }).sort((a, b) => a.near - b.near);
+  const fs = 12 / k, lw = 1.5 / k;
+  const front = x => !rs.some(o => o !== x && o.r.floor === x.r.floor && o.near > x.near && o.u0 < (x.u0 + x.u1) / 2 && o.u1 > (x.u0 + x.u1) / 2);
+  const boxes = rs.map(x => {
+    const { r, u0, u1, z0, z1 } = x, sel = r.id === S.sel, fill = PALETTE_LIGHT[r.c % 7], name = (u1 - u0) * k > 50 && (sel || front(x)) ? `<text x="${(u0 + u1) / 2}" y="${-(z0 + z1) / 2}" font-size="${fs}" text-anchor="middle" dominant-baseline="middle" fill="#1A2220" pointer-events="none">${esc(r.name)}</text>` : "";
+    return `<g data-sroom="${r.id}"${S.facMove ? ` pointer-events="none"` : ""}><rect x="${u0}" y="${-z1}" width="${u1 - u0}" height="${z1 - z0}" fill="${fill}" fill-opacity="${photo ? 0.28 : 0.85}" stroke="${sel ? "#1F6F5C" : "#33403c"}" stroke-width="${sel ? lw * 2.2 : lw}"/>${name}</g>`;
+  }).join("");
+  const sx = rs.find(x => x.r.id === S.sel), selTop = sx ? `<rect x="${sx.u0}" y="${-sx.z1}" width="${sx.u1 - sx.u0}" height="${sx.z1 - sx.z0}" fill="none" stroke="#1F6F5C" stroke-width="${lw * 2.2}" stroke-dasharray="${6 / k} ${3 / k}" pointer-events="none"/>` : "";
+  const ext = sideExtent(S.side), dim = rs.length ? `<g pointer-events="none"><line x1="${ext.u0}" y1="${0.5}" x2="${ext.u1}" y2="${0.5}" stroke="#1A2220" stroke-width="${lw}"/><line x1="${ext.u0}" y1="${0.3}" x2="${ext.u0}" y2="${0.7}" stroke="#1A2220" stroke-width="${lw}"/><line x1="${ext.u1}" y1="${0.3}" x2="${ext.u1}" y2="${0.7}" stroke="#1A2220" stroke-width="${lw}"/><text x="${(ext.u0 + ext.u1) / 2}" y="${0.5 + fs * 1.3}" font-size="${fs}" text-anchor="middle" fill="#1A2220">${esc(fmtLen(ext.u1 - ext.u0))} wide · ${esc(fmtLen(ext.top))} tall</text></g>` : "";
+  svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${lines.join("")}${ground}${S.facMove ? boxes + photo : photo + boxes}${selTop}${dim}</g>`;
+}
+function renderSideBar() {
+  const f = facades()[S.side], ax = SIDE[S.side];
+  $("#sideTabs").querySelectorAll("[data-side]").forEach(b => { b.setAttribute("aria-pressed", b.dataset.side === S.side); b.textContent = SIDE[b.dataset.side].name + (facades()[b.dataset.side] ? " ✓" : ""); });
+  $("#sideNote").textContent = !f ? `Add a photo of the ${ax.long}, taken straight on from far enough back to get the whole wall in.`
+    : S.facMove ? "Drag the photo so its ground line sits on the brown line and its corners match the rooms. Pinch to zoom." : "Drag a room sideways to line it up with the photo. Upstairs rooms snap to the edges of the rooms below.";
+  $("#sideRow1").innerHTML = !S.canWrite ? "" : f ? `<button class="btn small ${S.facMove ? "primary" : ""}" id="facMove">${S.facMove ? "Done moving photo" : "Move photo"}</button><button class="btn small" id="facScale">Set the scale</button><button class="btn small" id="facCrop">Crop</button><button class="btn small" id="facNew">Replace</button><button class="btn small danger" id="facDel">Remove</button>`
+    : `<button class="btn primary small" id="facNew">Add a photo of this side</button>`;
+  $("#sideRow2").hidden = !f;
+  if (f) { $("#facShow").checked = !f.hidden; $("#facOp").value = f.opacity; }
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  on("facNew", () => facadeInput.click());
+  on("facMove", () => { S.facMove = !S.facMove; renderAll(); });
+  on("facScale", () => calibrateSite(clone(f), f, { intro: facIntro, done: mpp => { const before = JSON.stringify(S.plan); f.mpp = mpp; commit(before); fitSide(); renderAll(); } }));
+  on("facCrop", () => cropPhoto(f, "Save crop", () => renderAll()));
+  on("facDel", async () => { const old = f; edit(() => { delete facades()[S.side]; S.facMove = false; }); try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } });
+}
+const facIntro = "Mark the two ends of something whose size you know: the front door's height (usually about 2.0 m), a window you've measured, or the length of a wall.";
+const facadeInput = document.createElement("input"); facadeInput.type = "file"; facadeInput.accept = "image/*";
+facadeInput.onchange = async () => {
+  const file = facadeInput.files[0]; facadeInput.value = ""; if (!file) return;
+  try {
+    const { blob, w, h } = await downscale(file, 3000, 0.88), side = S.side, old = facades()[side];
+    const ns = { id: uid(), side, w, h, mpp: 0.01, u: 0, z: 0, opacity: 0.75 };
+    if (store.assets) { const up = await store.assets.upload(blob, { type: "image/jpeg" }); ns.asset = up.id; }
+    else { await idb.put(ns.id, blob); localPhotoURL[ns.id] = URL.createObjectURL(blob); ns.local = true; }
+    calibrateSite(ns, null, { intro: facIntro, done: mpp => {
+      const ext = sideExtent(side), before = JSON.stringify(S.plan);
+      ns.mpp = mpp; ns.u = r2((ext.u0 + ext.u1) / 2); ns.z = r2(h * mpp / 2 - 0.3);
+      facades()[side] = ns; commit(before);
+      if (old) { (async () => { try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } })(); }
+      cropPhoto(ns, "Next: line it up", () => { S.side = side; S.facMove = true; if (S.view !== "side") setView("side"); fitSide(); renderAll(); });
+    } });
+  } catch (e) { toast((e && e.message) || "That image couldn't be used."); }
+};
+$("#sideTabs").addEventListener("click", e => { const b = e.target.closest("[data-side]"); if (!b) return; S.side = b.dataset.side; S.facMove = false; fitSide(); renderAll(); });
+$("#facShow").onchange = e => { const f = facades()[S.side]; if (f) edit(() => { f.hidden = !e.target.checked; }); };
+$("#facOp").addEventListener("input", e => { const f = facades()[S.side]; if (f) { f.opacity = +e.target.value; renderPlan(); } });
+$("#facOp").addEventListener("change", () => commit());
+/* the side photos stand just outside the house in 3D, each facing out from its side */
+function facadeMeshes() {
+  const out = [], rs = houseRooms(); if (!rs.length) return out;
+  const b = bbox(rs.flatMap(r => r.pts)), gap = (S.plan.wallT || 0.1) / 2 + 0.05;
+  for (const [side, f] of Object.entries(S.plan.facades || {})) {
+    if (!f || f.hidden || !SIDE[side] || !photoURL(f)) continue;
+    const W = f.w * f.mpp, H = f.h * f.mpp, c = f.crop || [0, 0, 1, 1], cw = (c[2] - c[0]) * W, ch = (c[3] - c[1]) * H;
+    const cu = f.u - W / 2 + (c[0] + c[2]) / 2 * W, cz = f.z + H / 2 - (c[1] + c[3]) / 2 * H;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(cw, ch), new THREE.MeshBasicMaterial({ map: facadeTexture(f), transparent: f.opacity < 1, opacity: f.opacity }));
+    if (side === "S") { m.position.set(cu, cz, b.y1 + gap); m.rotation.y = 0; }
+    if (side === "N") { m.position.set(-cu, cz, b.y0 - gap); m.rotation.y = Math.PI; }
+    if (side === "E") { m.position.set(b.x1 + gap, cz, -cu); m.rotation.y = Math.PI / 2; }
+    if (side === "W") { m.position.set(b.x0 - gap, cz, cu); m.rotation.y = -Math.PI / 2; }
+    m.name = SIDE[side].name + " photo"; out.push(m);
+  }
+  return out;
+}
+function facadeTexture(f) {
+  T3.tex ||= new Map();
+  const c = f.crop || [0, 0, 1, 1], key = f.id + ":" + c.join(",");
+  if (T3.tex.has(key)) return T3.tex.get(key);
+  const cv = document.createElement("canvas"), ar = ((c[2] - c[0]) * f.w) / ((c[3] - c[1]) * f.h);
+  cv.width = ar >= 1 ? 2048 : Math.round(2048 * ar); cv.height = ar >= 1 ? Math.round(2048 / ar) : 2048;
+  const x = cv.getContext("2d"); x.fillStyle = "#cfd6d3"; x.fillRect(0, 0, cv.width, cv.height);
+  const tex = new THREE.CanvasTexture(cv); tex.keepAlive = true; T3.tex.set(key, tex);
+  const img = new Image();
+  img.onload = () => { const iw = img.naturalWidth, ih = img.naturalHeight; x.drawImage(img, c[0] * iw, c[1] * ih, (c[2] - c[0]) * iw, (c[3] - c[1]) * ih, 0, 0, cv.width, cv.height); tex.needsUpdate = true; };
+  img.src = photoURL(f);
+  return tex;
 }
 function startSiteAlign(id) {
   const st = sites().find(x => x.id === id); if (!st) return;
@@ -2611,7 +2777,7 @@ async function exportProjectZip() {
   if (!window.JSZip) { toast("The zip tool couldn't load. Check your connection and reload."); return; }
   const zip = new JSZip(), n = slug(S.plan.name); let missing = 0;
   zip.file("project.json", JSON.stringify(S.plan, null, 1));
-  for (const p of [...S.plan.rooms.flatMap(r => r.photos), ...(S.plan.sites || [])]) {
+  for (const p of [...S.plan.rooms.flatMap(r => r.photos), ...(S.plan.sites || []), ...Object.values(S.plan.facades || {})]) {
     try { zip.file(`photos/${p.id}.jpg`, await photoBlob(p)); } catch { missing++; }
   }
   setSync("busy", "Packing project…");
@@ -2624,7 +2790,7 @@ async function readProjectFile(f) {
     if (!window.JSZip) throw 0;
     const zip = await JSZip.loadAsync(f), pj = zip.file("project.json"); if (!pj) throw 0;
     const p = JSON.parse(await pj.async("string")); if (!validPlan(p)) throw 0;
-    const all = [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.sites) ? p.sites : [])];
+    const all = [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.sites) ? p.sites : []), ...(p.facades && typeof p.facades === "object" ? Object.values(p.facades) : [])];
     let i = 0, total = all.length;
     for (const ph of all) {
       const zf = zip.file(`photos/${ph.id}.jpg`); if (!zf) continue;
@@ -2661,7 +2827,7 @@ document.querySelectorAll("#layersPop [data-ly]").forEach(el => el.addEventListe
 }));
 $("#addGarden").onclick = () => addRoom("rect", "outdoor");
 $("#zin").onclick = () => zoomBy(1.5); $("#zout").onclick = () => zoomBy(1 / 1.5);
-$("#zroom").onclick = () => { const r = S.plan.rooms.find(x => x.id === S.sel); if (!r) return; const b = bbox(r.pts), W = svg.clientWidth, H = svg.clientHeight, k = Math.max(2, Math.min(400, Math.min(W / (b.w + 3), H / (b.h + 3)))); S.k = k; S.tx = W / 2 - (b.x0 + b.w / 2) * k; S.ty = H / 2 - (b.y0 + b.h / 2) * k; renderPlan(); }; $("#zfit").onclick = () => { fit(S.floor); renderPlan(); };
+$("#zroom").onclick = () => { if (S.view === "side") { fitSide(S.sel); renderPlan(); return; } const r = S.plan.rooms.find(x => x.id === S.sel); if (!r) return; const b = bbox(r.pts), W = svg.clientWidth, H = svg.clientHeight, k = Math.max(2, Math.min(400, Math.min(W / (b.w + 3), H / (b.h + 3)))); S.k = k; S.tx = W / 2 - (b.x0 + b.w / 2) * k; S.ty = H / 2 - (b.y0 + b.h / 2) * k; renderPlan(); }; $("#zfit").onclick = () => { if (S.view === "side") fitSide(); else fit(S.floor); renderPlan(); };
 $("#undoBtn").onclick = undo;
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); undo(); }
