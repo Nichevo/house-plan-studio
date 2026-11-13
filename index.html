@@ -590,6 +590,14 @@ function setEdgeLength(room, i, L) {
   return true;
 }
 const roomH = room => room.height || floorOf(room).height;
+/* sloping ceiling: room.slope = { wall, low } — the ceiling is "low" along that wall and rises evenly to the full height at the far side */
+const slopeOf = room => room.slope && !isOut(room) && edges(room)[room.slope.wall] && room.slope.low > 0.5 && room.slope.low < roomH(room) ? room.slope : null;
+function hAt(room, P) {
+  const sl = slopeOf(room), H = roomH(room); if (!sl) return H;
+  const e = edges(room)[sl.wall], dist = q => (q[0] - e.a[0]) * e.n[0] + (q[1] - e.a[1]) * e.n[1];
+  const D = Math.max(...room.pts.map(dist)); if (D < 0.1) return H;
+  return sl.low + (H - sl.low) * Math.max(0, Math.min(1, dist(P) / D));
+}
 function floorOf(room) { return S.plan.floors.find(f => f.id === room.floor) || S.plan.floors[0]; }
 function floorElev(fid) { let z = 0; for (const f of S.plan.floors) { if (f.id === fid) return z; z += f.height + (f.slab ?? 0.25); } return z; }
 const roomsOn = fid => S.plan.rooms.filter(r => r.floor === fid);
@@ -623,9 +631,10 @@ function computeCuts(plan) {
 }
 function roomStats(room, cuts) {
   if (isOut(room)) { const a = area(room.pts); return { area: a, perim: perim(room), h: 0, wallGross: 0, wallNet: 0, vol: 0 }; }
-  const h = roomH(room), a = area(room.pts), p = perim(room);
+  const h = roomH(room), a = area(room.pts), p = perim(room), sl = slopeOf(room);
   let open = 0; (cuts[room.id] || []).forEach(list => list.forEach(c => open += (c.e - c.s) * Math.max(0, Math.min(c.top, h) - c.sill)));
-  return { area: a, perim: p, h, wallGross: p * h, wallNet: Math.max(0, p * h - open), vol: a * h };
+  const gross = sl ? edges(room).reduce((t, e) => t + e.len * (hAt(room, e.a) + hAt(room, e.b)) / 2, 0) : p * h;
+  return { area: a, perim: p, h, wallGross: gross, wallNet: Math.max(0, gross - open), vol: a * (sl ? hAt(room, centroid(room.pts)) : h) };
 }
 
 /* ---------- state ---------- */
@@ -901,6 +910,9 @@ function planMarkup(fid, o) {
   rooms = [...outs, ...ins];
   for (const r of ins) out.push(`<polygon class="room t${r.c % 7}" data-room="${r.id}" points="${r.pts.join(" ")}"/>`);
   for (const r of ins) out.push(`<polygon class="wall" points="${r.pts.join(" ")}" stroke-width="${t}"/>`);
+  // sloping ceilings: a dashed line along the low side with its height
+  for (const r of ins) { const sl = slopeOf(r); if (!sl) continue; const e = edges(r)[sl.wall], off = Math.min(0.55, area(r.pts) / Math.max(e.len, 1) / 4), A = [e.a[0] + e.n[0] * off, e.a[1] + e.n[1] * off], B = [e.b[0] + e.n[0] * off, e.b[1] + e.n[1] * off], mx = (A[0] + B[0]) / 2 + e.n[0] * 0.18, my = (A[1] + B[1]) / 2 + e.n[1] * 0.18; let g = Math.atan2(e.d[1], e.d[0]) * 180 / Math.PI; if (g > 90 || g <= -90) g -= 180;
+    out.push(`<line x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke="var(--muted)" stroke-width="${1.2 / k}" stroke-dasharray="${5 / k} ${3 / k}" pointer-events="none"/>${e.len * k > 90 ? `<text x="${mx}" y="${my}" font-size="${fs * 0.8}" text-anchor="middle" dominant-baseline="middle" fill="var(--muted)" transform="rotate(${g} ${mx} ${my})" pointer-events="none">ceiling slopes down to ${esc(fmtLen(sl.low))}</text>` : ""}`); }
   const T = extT(), band = T - t, spansOf = {};
   for (const r of ins) spansOf[r.id] = band > 0.004 ? outsideSpans(r) : edges(r).map(() => []);
   if (band > 0.004) for (const r of ins) edges(r).forEach(e => { for (const [a0, b0, xs, xe] of spansOf[r.id][e.i]) {
@@ -1310,10 +1322,12 @@ function renderRoom() {
         <button class="mtog ${r.measured[i] ? "on" : ""}" data-wmeas="${i}" ${ro ? "disabled" : ""} title="${r.measured[i] ? "Tape-measured. Tap to mark it as a guess" : "A guess. Tap to mark this length as tape-measured"}">${r.measured[i] ? "✓ Real" : "Guess"}</button></div>`).join("")}
     </div>
     <div class="grid2" ${out ? "hidden" : ""}>
-      <label class="field">Ceiling height<input class="num" id="rH" value="${esc(fmtIn(roomH(r)))}" ${ro ? "disabled" : ""}></label>
+      <label class="field">${slopeOf(r) ? "Ceiling height, at the high side" : "Ceiling height"}<input class="num" id="rH" value="${esc(fmtIn(roomH(r)))}" ${ro ? "disabled" : ""}></label>
       <div class="field">&nbsp;<span class="note">${r.height ? "Set for this room" : "Uses the floor's height"}</span></div>
+      <label class="field">Sloping ceiling<select id="rSlope" ${ro ? "disabled" : ""}><option value="">Flat</option>${names.map((nm, i) => `<option value="${i}" ${slopeOf(r) && r.slope.wall === i ? "selected" : ""}>Low at the ${esc(nm.toLowerCase())}</option>`).join("")}</select></label>
+      <label class="field" ${slopeOf(r) ? "" : "hidden"}>Height at the low side<input class="num" id="rSlopeLow" value="${slopeOf(r) ? esc(fmtIn(r.slope.low)) : ""}" ${ro ? "disabled" : ""}></label>
     </div>
-    <p class="note">Typing a length marks that ${W} as tape-measured (✓ Real). Tap Guess or ✓ Real to switch it. Real lengths are kept when you resize, fit or close gaps, and Claude is told to keep them exactly. Type a length for example ${S.plan.units === "ft" ? `12' 6" or 150in` : "3.45 or 345cm"}. Changing a wall slides the wall after it, so corners stay square.</p>
+    <p class="note">Typing a length marks that ${W} as tape-measured (✓ Real). Tap Guess or ✓ Real to switch it. Real lengths are kept when you resize, fit or close gaps, and Claude is told to keep them exactly. Lengths can be typed like ${S.plan.units === "ft" ? `12' 6" or 150in` : "3.45 or 345cm"}. Changing a wall slides the wall after it, so corners stay square.</p>
   </div>
   <div class="sec">
     <div class="row"><h2 class="grow" style="margin:0">${out ? "Things in the garden" : "Appliances and furniture"} · ${r.items.length}</h2>
@@ -1410,6 +1424,8 @@ function bindRoom(r) {
   pane.querySelectorAll("[data-wlen]").forEach(el => lenInput(el, v => { const i = +el.dataset.wlen, rr = R(); const ok = setEdgeLength(rr, i, v); if (ok) rr.measured[i] = true; rr.openings.forEach(o => clampOpening(rr, o)); return ok; }));
   const wd = (sel, i) => { const el = pane.querySelector(sel); if (el) lenInput(el, v => { const rr = R(); const ok = setEdgeLength(rr, i, v); if (ok) { rr.measured[i] = true; rr.measured[i + 2] = true; } rr.openings.forEach(o => clampOpening(rr, o)); return ok; }); };
   wd("#rW", 0); wd("#rD", 1);
+  const slEl = pane.querySelector("#rSlope"); if (slEl) slEl.onchange = () => edit(() => { const rr = R(); if (slEl.value === "") delete rr.slope; else rr.slope = { wall: +slEl.value, low: rr.slope && rr.slope.low < roomH(rr) ? rr.slope.low : r2(Math.max(1.2, roomH(rr) - 0.6)) }; });
+  const slLow = pane.querySelector("#rSlopeLow"); if (slLow) slLow.addEventListener("change", () => { const v = parseLen(slLow.value), rr = R(); if (v == null || v < 0.6 || v >= roomH(rr)) { toast("The low side has to be lower than the ceiling height."); renderPane(); return; } edit(() => { R().slope.low = v; }); });
   const hEl = pane.querySelector("#rH"); if (hEl) hEl.addEventListener("change", () => { const v = parseLen(hEl.value); if (v == null || v < 1.5 || v > 8) { toast("Enter a ceiling height between 1.5 m and 8 m."); renderPane(); return; } edit(() => { R().height = v; }); });
   on("#addDoor", "click", () => edit(() => { const rr = R(), e = edges(rr)[0]; const o = door(0, Math.max(0.1, e.len / 2 - 0.41)); clampOpening(rr, o); rr.openings.push(o); }));
   on("#addOpen", "click", () => edit(() => { const rr = R(), used = new Set(rr.openings.filter(o => o.type === "open").map(o => o.edge)), i = edges(rr).findIndex((_, j) => !used.has(j)); if (i < 0) return; const o = openSide(i); rr.openings = rr.openings.filter(x => x.edge !== i); clampOpening(rr, o); rr.openings.push(o); }));
@@ -1766,7 +1782,11 @@ function build3D(opts) {
       const shape = new THREE.Shape(r.pts.map(p => new THREE.Vector2(p[0], -p[1])));
       const fgeo = new THREE.ExtrudeGeometry(shape, { depth: slab, bevelEnabled: false }); fgeo.rotateX(-Math.PI / 2);
       const fm = new THREE.Mesh(fgeo, floorMats[r.c % 7]); fm.position.y = elev - slab; fm.name = r.name + " floor"; rg.add(fm);
-      const h = roomH(r), names = wallNames(r), T3 = extT() - t / 2, oSp = T3 > 0.004 ? outsideSpans(r) : null;
+      const h = roomH(r), names = wallNames(r), T3 = extT() - t / 2, oSp = T3 > 0.004 ? outsideSpans(r) : null, sloped = !!slopeOf(r);
+      // a wall piece whose top follows a sloping ceiling: outline in the wall's plane, extruded through its thickness
+      const slopeGeo = (e, s, en, y0, thick) => { const mid = (s + en) / 2, top = u => hAt(r, [e.a[0] + e.d[0] * Math.max(0, Math.min(e.len, u)), e.a[1] + e.d[1] * Math.max(0, Math.min(e.len, u))]);
+        const sh = new THREE.Shape([new THREE.Vector2(s - mid, y0), new THREE.Vector2(en - mid, y0), new THREE.Vector2(en - mid, Math.max(y0 + 0.01, top(en))), new THREE.Vector2(s - mid, Math.max(y0 + 0.01, top(s)))]);
+        const g = new THREE.ExtrudeGeometry(sh, { depth: thick, bevelEnabled: false }); g.translate(0, 0, -thick / 2); return g; };
       edges(r).forEach(e => {
         const list = (cuts[r.id][e.i] || []).slice().sort((a, b) => a.s - b.s);
         const pieces = []; let cur = 0;
@@ -1783,17 +1803,19 @@ function build3D(opts) {
         }
         if (cur < e.len) pieces.push([cur, e.len, 0, h]);
         for (const [s, en, y0, y1] of pieces) {
-          if (en - s < 0.005 || y1 - y0 < 0.005) continue;
-          const m = new THREE.Mesh(new THREE.BoxGeometry(en - s, y1 - y0, t / 2), wallMat);
+          const sl = sloped && y1 >= h - 0.001; // reaches the ceiling, so its top follows the slope
+          if (en - s < 0.005 || (!sl && y1 - y0 < 0.005)) continue;
+          if (sl && Math.max(hAt(r, [e.a[0] + e.d[0] * s, e.a[1] + e.d[1] * s]), hAt(r, [e.a[0] + e.d[0] * en, e.a[1] + e.d[1] * en])) - y0 < 0.005) continue;
+          const m = new THREE.Mesh(sl ? slopeGeo(e, s, en, y0, t / 2) : new THREE.BoxGeometry(en - s, y1 - y0, t / 2), wallMat);
           const mid = (s + en) / 2;
-          m.position.set(e.a[0] + e.d[0] * mid + e.n[0] * t / 4, elev + (y0 + y1) / 2, e.a[1] + e.d[1] * mid + e.n[1] * t / 4);
+          m.position.set(e.a[0] + e.d[0] * mid + e.n[0] * t / 4, sl ? elev : elev + (y0 + y1) / 2, e.a[1] + e.d[1] * mid + e.n[1] * t / 4);
           m.rotation.y = Math.atan2(-e.d[1], e.d[0]); m.name = `${r.name} ${names[e.i]}`; rg.add(m);
           // the outer skin of an outside wall
           if (oSp) for (const [a0, b0, xs, xe] of oSp[e.i]) {
             let s2 = Math.max(s, a0), e2 = Math.min(en, b0); if (e2 - s2 < 0.005) continue;
             if (xs && s2 < 0.001) s2 -= T3; if (xe && e2 > e.len - 0.001) e2 += T3;
-            const o = new THREE.Mesh(new THREE.BoxGeometry(e2 - s2, y1 - y0, T3), wallMat), md = (s2 + e2) / 2;
-            o.position.set(e.a[0] + e.d[0] * md - e.n[0] * T3 / 2, elev + (y0 + y1) / 2, e.a[1] + e.d[1] * md - e.n[1] * T3 / 2);
+            const o = new THREE.Mesh(sl ? slopeGeo(e, s2, e2, y0, T3) : new THREE.BoxGeometry(e2 - s2, y1 - y0, T3), wallMat), md = (s2 + e2) / 2;
+            o.position.set(e.a[0] + e.d[0] * md - e.n[0] * T3 / 2, sl ? elev : elev + (y0 + y1) / 2, e.a[1] + e.d[1] * md - e.n[1] * T3 / 2);
             o.rotation.y = m.rotation.y; o.name = `${r.name} ${names[e.i]} outside`; rg.add(o);
           }
         }
@@ -2008,7 +2030,7 @@ async function estimateRoom(roomId, mode = {}) {
 ${isOut(room) ? "Outdoor area (garden, patio or similar)" : "Room"}: "${room.name}" on the ${floorOf(room).name}. Seen from above with north at the top, walls in clockwise order:
 ${outlineBrief(room)}
 Do not suggest a new length for a TAPE-MEASURED wall.
-Ceiling height: currently ${roomH(room).toFixed(2)} m (${room.height ? "set by the user" : "default guess"}).
+Ceiling height: currently ${roomH(room).toFixed(2)} m (${room.height ? "set by the user" : "default guess"}).${slopeOf(room) ? ` The ceiling slopes down to ${room.slope.low.toFixed(2)} m along wall ${room.slope.wall}.` : ""} If the ceiling slopes (for example under a skillion or pitched roof), say which wall is the low side and how high the ceiling is there.
 ${(() => { const nbs = neighbourWalls(room); return nbs.length ? `The user has arranged the rooms on the plan by hand, so treat how they fit together as reliable. Neighbouring rooms against this one:
 ${nbs.map(n => `- wall ${n.wall} (${names[n.wall]}) ${n.gap > S.plan.wallT * 1.6 ? `faces ${n.room.name}'s wall ${n.gap.toFixed(2)} m away` : `backs onto ${n.room.name}`}${n.open ? " as an open side with no wall between them" : ""}; that wall of ${n.room.name} is ${n.lenB.toFixed(2)} m (${n.measuredB ? "MEASURED" : "a guess"}) and ${n.shared.toFixed(2)} m of it lines up with this wall.`).join("\n")}
 Where a wall is shared with a neighbour along its whole length, its length should normally match the neighbour's wall: use the neighbour's length when that is measured, otherwise reconcile the two from the photos, and say which you used in "basis".` : ""; })()}
@@ -2018,8 +2040,8 @@ Photos, in order: ${ordered.slice(0, blobs.length).map((p, i) => `photo ${i + 1}
 Use measured lengths first, then common objects of standard size as scale references (interior doors about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high, light switches about 1.2 m from the floor, sockets about 0.3 m, floor tiles and boards of standard sizes). Estimate the length of each wall you can see well, the ceiling height, and the doors and windows you can see. ${u}
 ${ITEM_PROMPT}
 Reply with JSON only, in this shape:
-{"walls":[{"wall":0,"length_m":4.2,"confidence":"low|medium|high","basis":"short reason"}],"ceiling_height_m":2.4,"openings":[{"type":"door|window","wall":0,"offset_m":0.5,"width_m":0.8,"height_m":2.0,"sill_m":0}],${ITEM_JSON},"notes":"one or two sentences on which extra photo or measurement would most improve this"}
-Leave out any wall you cannot judge. offset_m is measured along the wall from its start corner going clockwise. Do not invent openings you cannot see.`;
+{"walls":[{"wall":0,"length_m":4.2,"confidence":"low|medium|high","basis":"short reason"}],"ceiling_height_m":2.4,"ceiling_low_side":null,"openings":[{"type":"door|window","wall":0,"offset_m":0.5,"width_m":0.8,"height_m":2.0,"sill_m":0}],${ITEM_JSON},"notes":"one or two sentences on which extra photo or measurement would most improve this"}
+ceiling_height_m is the highest point; for a sloping ceiling set "ceiling_low_side":{"wall":2,"height_m":1.9}, otherwise null. Leave out any wall you cannot judge. offset_m is measured along the wall from its start corner going clockwise. Do not invent openings you cannot see.`;
     status.textContent = `Claude is looking at ${blobs.length} photo${blobs.length > 1 ? "s" : ""}. This can take up to a minute…`;
     const res = await store.sample.json(prompt, { images: blobs, modelTier: "complex" });
     showSuggestions(room.id, res, m, status, out, mode);
@@ -2034,11 +2056,13 @@ function showSuggestions(roomId, res, m, status, out, mode = {}) {
   const walls = (Array.isArray(res && res.walls) ? res.walls : []).filter(w => es[w.wall] && w.length_m > 0.3 && w.length_m < 40);
   const ops = (Array.isArray(res && res.openings) ? res.openings : []).filter(o => es[o.wall] && o.width_m > 0.2 && (o.type === "door" || o.type === "window"));
   const hh = !isOut(room) && res && res.ceiling_height_m > 1.8 && res.ceiling_height_m < 6 ? res.ceiling_height_m : null;
+  const ls = !isOut(room) && res && res.ceiling_low_side && es[res.ceiling_low_side.wall] && res.ceiling_low_side.height_m > 0.6 && res.ceiling_low_side.height_m < (hh || roomH(room)) ? res.ceiling_low_side : null;
   const items0 = parseItems(res && res.items, es.length); items0.forEach(it => clampItem(room, it)); const items = newItemsOnly(room, items0), io = !!mode.itemsOnly;
   status.textContent = "Here's what Claude estimated. Tick what you want to use.";
   out.innerHTML = `<div class="sec">
     ${walls.map((w, i) => `<label class="sugg"><input type="checkbox" data-sw="${i}" ${room.measured[w.wall] || io ? "" : "checked"}><span><b>${names[w.wall]}: ${fmtLen(w.length_m)}</b> <span class="chip">${esc(w.confidence || "")}</span><br><small class="muted">Now ${fmtLen(es[w.wall].len)}${room.measured[w.wall] ? ", which you measured" : ""}. ${esc(w.basis || "")}</small></span></label>`).join("")}
     ${hh ? `<label class="sugg"><input type="checkbox" id="sh" ${room.height || io ? "" : "checked"}><span><b>Ceiling height: ${fmtLen(hh)}</b><br><small class="muted">Now ${fmtLen(roomH(room))}</small></span></label>` : ""}
+    ${ls ? `<label class="sugg"><input type="checkbox" id="sls" ${slopeOf(room) || io ? "" : "checked"}><span><b>Sloping ceiling: down to ${fmtLen(ls.height_m)} at the ${esc(names[ls.wall].toLowerCase())}</b><br><small class="muted">${slopeOf(room) ? `Now down to ${fmtLen(room.slope.low)} at the ${esc(names[room.slope.wall].toLowerCase())}` : "Now flat"}</small></span></label>` : ""}
     ${ops.length ? `<label class="sugg"><input type="checkbox" id="so" ${room.openings.length || io ? "" : "checked"}><span><b>${ops.length} door${ops.length > 1 ? "s and windows" : " or window"}</b><br><small class="muted">${ops.map(o => `${o.type} on ${names[o.wall]}, ${fmtLen(o.width_m)} wide`).join("; ")}. Replaces the ${room.openings.filter(o => !o.locked).length} already on this room${room.openings.some(o => o.locked) ? "; locked ones stay" : ""}.</small></span></label>` : ""}
     ${items.length ? `<label class="sugg"><input type="checkbox" id="si" checked><span><b>${items.length} appliance${items.length > 1 ? "s and furniture" : " or piece of furniture"}</b><br><small class="muted">${esc(items.map(x => x.label).join(", "))}. Added to the ${room.items.length} already on this room.</small></span></label>` : (io ? `<div class="empty">Claude didn't find any appliances or furniture it could place.</div>` : "")}
     ${!walls.length && !hh && !ops.length && !items.length ? `<div class="empty">Claude couldn't estimate anything reliable from these photos.</div>` : ""}
@@ -2055,6 +2079,7 @@ function showSuggestions(roomId, res, m, status, out, mode = {}) {
         for (const ax of [0, 1]) { const vs = chosen.filter(w => w.wall % 2 === ax).map(w => w.length_m); if (vs.length) setEdgeLength(rr, ax, vs.reduce((a, b) => a + b) / vs.length); }
       } else chosen.forEach(w => setEdgeLength(rr, w.wall, w.length_m));
       if (hh && out.querySelector("#sh")?.checked) rr.height = Math.round(hh * 100) / 100;
+      if (ls && out.querySelector("#sls")?.checked) rr.slope = { wall: ls.wall, low: r2(ls.height_m) };
       if (ops.length && out.querySelector("#so")?.checked) {
         const lk = rr.openings.filter(o => o.locked);
         rr.openings = [...lk, ...ops.filter(o => !lk.some(k => k.edge === o.wall && (k.type === "open" || ((o.offset_m || 0) < k.offset + k.width && k.offset < (o.offset_m || 0) + o.width_m)))).map(o => o.type === "door" ? door(o.wall, o.offset_m || 0.2, o.width_m, { height: o.height_m || 2.03 }) : win(o.wall, o.offset_m || 0.2, o.width_m, { height: o.height_m || 1.2, sill: o.sill_m ?? 0.9 }))];
@@ -2170,6 +2195,7 @@ function cutCorner(room, v, a, b, notch) {
   room.pts = pts;
   room.openings.forEach(o => { if (o.type === "open" && o.edge === v) { o.edge = v + k; return; } const [w, al] = shift(o.edge, o.offset); o.edge = w; if (o.type !== "open") o.offset = r2(Math.max(0, al)); });
   room.photos.forEach(p => { if (p.wall != null) p.wall = shift(p.wall, 0)[0]; });
+  if (room.slope) room.slope.wall = shift(room.slope.wall, 0)[0];
   (room.items || []).forEach(it => { const [w, al] = shift(it.wall, it.along); it.wall = w; it.along = r2(Math.max(0, al)); });
   const m = {}; for (const [j, val] of Object.entries(room.measured || {})) { const jj = +j; if (!val) continue; if (jj === v || jj === wIn) continue; m[jj > v ? jj + k : jj] = true; } room.measured = m;
   room.openings.forEach(o => clampOpening(room, o)); (room.items || []).forEach(it => clampItem(room, it));
@@ -2221,6 +2247,7 @@ function splitWall(room, i) {
   room.openings.forEach(o => { if (o.type === "open" && o.edge === i) { extra.push({ ...clone(o), id: uid(), edge: i + 1 }); return; } const [w, a] = map(o.edge, o.offset + (o.edge === i ? o.width / 2 : 0)); o.offset = o.edge === i ? r2(a - o.width / 2) : o.offset; o.edge = w; });
   room.openings.push(...extra);
   room.photos.forEach(p => { if (p.wall != null && p.wall > i) p.wall++; });
+  if (room.slope && room.slope.wall > i) room.slope.wall++;
   (room.items || []).forEach(it => { const [w, a] = map(it.wall, it.along + (it.wall === i ? it.w / 2 : 0)); it.along = it.wall === i ? r2(a - it.w / 2) : it.along; it.wall = w; });
   const m = {}; Object.keys(room.measured || {}).forEach(k => { const j = +k; if (room.measured[k] && j !== i) m[j > i ? j + 1 : j] = true; }); room.measured = m;
   room.openings.forEach(o => clampOpening(room, o)); (room.items || []).forEach(it => clampItem(room, it));
@@ -3178,7 +3205,8 @@ Work out the room's outline. Walk around the walls clockwise as seen from above,
 For scale, use any measured length first, then objects of standard size: interior doors are about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high and 0.60 m deep, light switches about 1.2 m up, sockets about 0.3 m up, beds about 1.9 to 2.0 m long, and floor tiles and boards of standard sizes. Typical ceilings are 2.3 to 2.7 m.
 ${ITEM_PROMPT}
 Reply with JSON only, in this shape:
-{"name":"Kitchen","outdoor":false,"walls":[{"length_m":4.2,"turn":"R"},{"length_m":3.1,"turn":"R"},{"length_m":4.2,"turn":"R"},{"length_m":3.1,"turn":"R"}],"ceiling_height_m":2.4,"photo_walls":[0,1,2,3],"openings":[{"type":"door","wall":2,"offset_m":0.5,"width_m":0.8,"height_m":2.03,"sill_m":0,"leads_to":"Hall"},{"type":"window","wall":0,"offset_m":1.2,"width_m":1.2,"height_m":1.2,"sill_m":0.9,"leads_to":null}],${ITEM_JSON},"confidence":"low|medium|high","notes":"one sentence on which extra photo or measurement would most improve this"}
+{"name":"Kitchen","outdoor":false,"walls":[{"length_m":4.2,"turn":"R"},{"length_m":3.1,"turn":"R"},{"length_m":4.2,"turn":"R"},{"length_m":3.1,"turn":"R"}],"ceiling_height_m":2.4,"ceiling_low_side":null,"photo_walls":[0,1,2,3],"openings":[{"type":"door","wall":2,"offset_m":0.5,"width_m":0.8,"height_m":2.03,"sill_m":0,"leads_to":"Hall"},{"type":"window","wall":0,"offset_m":1.2,"width_m":1.2,"height_m":1.2,"sill_m":0.9,"leads_to":null}],${ITEM_JSON},"confidence":"low|medium|high","notes":"one sentence on which extra photo or measurement would most improve this"}
+ceiling_height_m is the highest point of the ceiling. If the ceiling slopes (a skillion or pitched roof, an attic room), set "ceiling_low_side":{"wall":n,"height_m":1.9} for the wall where it is lowest; otherwise null.${cur && slopeOf(cur) ? ` The user has set the ceiling to slope down to ${cur.slope.low.toFixed(2)} m along wall ${cur.slope.wall}.` : ""}
 photo_walls lists, for each photo in order, the number of the wall it mainly shows, or null if unclear. offset_m is the distance along the wall from its start corner, going clockwise, to the near edge of the opening. For each door, leads_to is the room it opens into: an exact name from the list above when it matches, "outside" for an outside door, or a short guess such as "Hall" or "Landing". Use null for windows. Do not invent openings you cannot see.`;
       try { est = await store.sample.json(cur ? prompt.replace("starting at the left end of the main wall facing the camera in photo 1, so wall 0 is that wall", "starting with wall 0 of the current outline described above") : prompt, { images: imgs, modelTier: "complex" }); }
       catch (e) {
@@ -3200,6 +3228,7 @@ photo_walls lists, for each photo in order, the number of the wall it mainly sho
   else if (est && known0 && r.pts.length >= 4 && Array.isArray(est.walls) && +(est.walls[0] || {}).length_m > 0) { f = known0 / +est.walls[0].length_m; if (f > 0.4 && f < 2.5) r.pts = r.pts.map(([x, y]) => [r2(x * f), r2(y * f)]); else f = 1; }
   else if (est && Array.isArray(est.walls) && est.walls.length >= 2) { const w = +est.walls[0].length_m || 3.5, d = +est.walls[1].length_m || 3; r.pts = [[0, 0], [w, 0], [w, d], [0, d]].map(p => [r2(p[0]), r2(p[1])]); }
   if (est && est.ceiling_height_m > 1.8 && est.ceiling_height_m < 6) r.height = Math.round(est.ceiling_height_m * 100) / 100;
+  { const ls = est && est.ceiling_low_side; if (ls && Number.isInteger(ls.wall) && ls.wall >= 0 && ls.wall < r.pts.length && ls.height_m > 0.6 && ls.height_m < roomH(r)) r.slope = { wall: ls.wall, low: r2(ls.height_m) }; }
   const nE = r.pts.length;
   if (est && Array.isArray(est.openings)) {
     for (const o of est.openings) {
@@ -3229,7 +3258,7 @@ photo_walls lists, for each photo in order, the number of the wall it mainly sho
       r.pts = alignLike(r.pts, cur);
     } else r.pts = clone(cur.pts);
     const sameNow = r.pts.length === cur.pts.length;
-    r.id = cur.id; r.c = cur.c; r.floor = cur.floor; if (!opt.name) r.name = cur.name; if (cur.height) r.height = cur.height; if (!opt.outdoor && cur.kind === "outdoor") r.kind = "outdoor";
+    r.id = cur.id; r.c = cur.c; r.floor = cur.floor; if (!opt.name) r.name = cur.name; if (cur.height) r.height = cur.height; if (slopeOf(cur) && sameNow) r.slope = { ...cur.slope }; if (!opt.outdoor && cur.kind === "outdoor") r.kind = "outdoor";
     r.measured = sameNow ? { ...cur.measured } : {};
     const old = sameNow ? { openings: clone(cur.openings), items: clone(cur.items || []) } : (() => { const t = { pts: r.pts, openings: [], items: [] }; remapOnto(cur, t); return t; })();
     const lockedOps = old.openings.filter(o => o.locked);
