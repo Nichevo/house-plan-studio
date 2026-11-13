@@ -157,6 +157,7 @@ table.tot tr.sum td{font-weight:600;border-bottom:0}
 .room{stroke:none;cursor:move}
 .t0{fill:var(--t0)}.t1{fill:var(--t1)}.t2{fill:var(--t2)}.t3{fill:var(--t3)}.t4{fill:var(--t4)}.t5{fill:var(--t5)}.t6{fill:var(--t6)}
 .wall{fill:none;stroke:var(--wall);stroke-linejoin:miter}
+.extw{stroke:var(--wall);stroke-linecap:butt}
 .gapl{stroke:var(--paper)}
 .sym{fill:none;stroke:var(--wall)}
 .win{stroke:var(--wall)}
@@ -320,6 +321,17 @@ svg.facmove{cursor:move}
       <div class="row"><span>See-through</span><input type="range" id="siteOp" min="0.15" max="1" step="0.05"></div>
       <div class="row"><span class="grow"></span><button class="btn primary" id="siteDone">Done</button></div>
     </div>
+    <div class="sitebar" id="walkBar" hidden>
+      <b id="walkTitle">Measuring walk</b>
+      <span class="note" style="margin:0" id="walkNote"></span>
+      <div class="row"><input class="num inp" id="walkLen" inputmode="decimal" style="flex:1;min-width:90px;font-size:18px" aria-label="Measured length"><button class="btn primary" id="walkSave">Save and next</button></div>
+      <div class="row"><button class="btn small" id="walkSkip">Skip this wall</button><span class="grow"></span><button class="btn small" id="walkDone">Finish</button></div>
+    </div>
+    <div class="sitebar" id="traceBar" hidden>
+      <b>Trace the house outline</b>
+      <span class="note" style="margin:0" id="traceNote"></span>
+      <div class="row"><button class="btn small" id="traceUndo">Undo corner</button><button class="btn small" id="traceClear">Start again</button><span class="grow"></span><button class="btn small" id="traceFit">Fit rooms inside</button><button class="btn primary small" id="traceDone">Done</button></div>
+    </div>
     <div class="sitebar facebar" id="sideBar" hidden>
       <div class="seg" role="group" aria-label="Side of the house" id="sideTabs"><button data-side="S">Front</button><button data-side="N">Back</button><button data-side="W">Left</button><button data-side="E">Right</button></div>
       <span class="note" style="margin:0" id="sideNote"></span>
@@ -345,12 +357,13 @@ svg.facmove{cursor:move}
     </div>
     <div class="layers" id="layersPop" hidden>
       <label data-only="2d"><input type="checkbox" data-ly="dims"> All wall lengths</label>
+      <label data-only="2d"><input type="checkbox" data-ly="other"> <span id="otherLbl">The other floor, see-through</span></label>
       <label data-only="3d"><input type="checkbox" data-ly="labels"> Room labels</label>
       <label><input type="checkbox" data-ly="app"> Appliances</label>
       <label><input type="checkbox" data-ly="furn"> Furniture</label>
       <label><input type="checkbox" data-ly="garden"> Garden and outdoor</label>
       <label><input type="checkbox" data-ly="photos"> Photos</label>
-      <label><input type="checkbox" data-ly="site"> Site photos</label>
+      <label><input type="checkbox" data-ly="site"> Site photos and house outline</label>
       <label data-only="3d"><input type="checkbox" data-ly="facades"> House-side photos</label>
       <span class="note" data-only="2d">Photos appear as camera dots on the walls. Tap one to see it.</span>
       <span class="note" data-only="3d">Photos are shown on the walls they were tagged to.</span>
@@ -427,6 +440,7 @@ function parseLen(str) {
   return null;
 }
 
+const SIDE_LABEL = { S: "Front", N: "Back", W: "Left side", E: "Right side" };
 /* ---------- geometry ---------- */
 function shoelace(p) { let s = 0; for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a[0] * b[1] - b[0] * a[1]; } return s; }
 const area = p => Math.abs(shoelace(p)) / 2;
@@ -441,6 +455,32 @@ function edges(room) {
   return out;
 }
 const perim = room => edges(room).reduce((s, e) => s + e.len, 0);
+/* outside walls: total thickness extT, inner face stays where it is, the extra goes outward */
+const extT = () => Math.max(S.plan.wallT, S.plan.extT || S.plan.wallT);
+/* the parts of each wall that face outside (no indoor room backing onto them), as [from, to, extendStart, extendEnd] along the wall */
+function outsideSpans(room, plan = S.plan) {
+  const t = plan.wallT, es = edges(room), n = es.length;
+  return es.map((e, i) => {
+    const cov = [];
+    for (const B of plan.rooms) {
+      if (B === room || B.floor !== room.floor || isOut(B)) continue;
+      for (const f of edges(B)) {
+        if (e.n[0] * f.n[0] + e.n[1] * f.n[1] > -0.98) continue;
+        const off = Math.abs((f.a[0] - e.a[0]) * e.n[0] + (f.a[1] - e.a[1]) * e.n[1]); if (off > t * 1.6) continue;
+        let u0 = (f.a[0] - e.a[0]) * e.d[0] + (f.a[1] - e.a[1]) * e.d[1], u1 = (f.b[0] - e.a[0]) * e.d[0] + (f.b[1] - e.a[1]) * e.d[1];
+        if (u0 > u1) [u0, u1] = [u1, u0]; u0 = Math.max(0, u0); u1 = Math.min(e.len, u1); if (u1 - u0 > 0.02) cov.push([u0, u1]);
+      }
+    }
+    cov.sort((a, b) => a[0] - b[0]);
+    const out = []; let cur = 0;
+    for (const [a, b] of cov) { if (a > cur + 0.02) out.push([cur, a]); cur = Math.max(cur, b); }
+    if (cur < e.len - 0.02) out.push([cur, e.len]);
+    const nx = es[(i + 1) % n], pv = es[(i + n - 1) % n];
+    const convexEnd = nx.d[0] * e.n[0] + nx.d[1] * e.n[1] > 0.05, convexStart = e.d[0] * pv.n[0] + e.d[1] * pv.n[1] > 0.05;
+    return out.map(([a, b]) => [a, b, a < 0.03 && convexStart, b > e.len - 0.03 && convexEnd]);
+  });
+}
+const onOutside = (spans, s) => spans.some(([a, b]) => s >= a - 0.01 && s <= b + 0.01);
 function bbox(pts) { let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 }; }
 function centroid(p) {
   let a = 0, cx = 0, cy = 0;
@@ -610,7 +650,7 @@ function blankPlan() {
     floors: [{ id: "f0", name: "Ground floor", height: 2.5, slab: 0.25 }, { id: "f1", name: "Upstairs", height: 2.4, slab: 0.25 }], rooms: [] };
 }
 const S = { plan: null, floor: "f0", sel: null, selItem: null, view: "2d", tab: "rooms", undo: [], k: 50, tx: 40, ty: 40, canWrite: true, pendingConfirm: null,
-  layers: (() => { const d = { dims: false, labels: true, app: true, furn: true, garden: true, photos: false, site: true, facades: true }; try { return { ...d, ...JSON.parse(localStorage.getItem("house-layers") || "{}") }; } catch { return d; } })() };
+  layers: (() => { const d = { dims: false, labels: true, app: true, furn: true, garden: true, photos: false, site: true, facades: true, other: false }; try { return { ...d, ...JSON.parse(localStorage.getItem("house-layers") || "{}") }; } catch { return d; } })() };
 const localPhotoURL = {}; // photo id -> object URL (photos kept on this device)
 
 function validPlan(p) { return p && Array.isArray(p.rooms) && Array.isArray(p.floors) && p.floors.length; }
@@ -637,8 +677,39 @@ const selRoom = () => S.plan.rooms.find(r => r.id === S.sel) || null;
 /* ---------- storage: shared db + assets when available, this device otherwise ---------- */
 const store = { db: null, assets: null, downloads: null, sample: null, user: null, ready: false, saving: false, again: false, timer: 0, lastRemote: 0 };
 function setSync(state, text) { const el = $("#sync"); el.dataset.s = state; el.lastElementChild.textContent = text; }
+/* ---------- saved versions: copies of the plan kept on this device (photos are shared, not copied) ---------- */
+const VKEY = "house-versions";
+function versions() { try { const v = JSON.parse(lsGet(VKEY) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } }
+function saveVersion(name, auto) {
+  if (!S.plan || S.plan.example) return false;
+  let list = versions(); list.unshift({ id: uid(), t: Date.now(), name: name || "", auto: !!auto, plan: JSON.stringify(S.plan) });
+  // keep every named version, and the 8 newest automatic ones
+  let autos = 0; list = list.filter(v => !v.auto || ++autos <= 8);
+  while (list.length) { try { localStorage.setItem(VKEY, JSON.stringify(list)); return true; } catch { const i = list.map(v => v.auto).lastIndexOf(true); if (i > 0) list.splice(i, 1); else if (list.length > 1) list.pop(); else return false; } }
+  return false;
+}
+function autoVersion() { const v = versions().find(x => x.auto); if (!v || Date.now() - v.t > 20 * 3600e3) saveVersion("", true); }
+function openVersions() {
+  const fmtT = t => new Date(t).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  const m = modal("Saved versions", `
+    <p style="margin:0">Save a copy of the plan before big changes, and go back to it if you don't like how things turn out. A copy is also kept automatically once a day while you work.</p>
+    ${S.canWrite ? `<div class="row"><input class="inp" id="vName" placeholder="Name, e.g. Before moving the kitchen" style="flex:1;min-width:160px"><button class="btn primary" id="vSave">Save this version</button></div>` : ""}
+    <div class="list" id="vList">${versions().map(v => { let info = ""; try { const p = JSON.parse(v.plan); info = `${p.rooms.filter(r => !isOut(r)).length} rooms`; } catch { } return `<div class="item" data-v="${v.id}" style="cursor:default;flex-wrap:wrap"><span class="t" style="flex:1;min-width:140px"><span>${esc(v.name || (v.auto ? "Automatic copy" : "Saved version"))}</span><small class="muted">${esc(fmtT(v.t))}${info ? " · " + info : ""}</small></span>${S.canWrite ? `<button class="btn small" data-vgo="${v.id}" style="flex:0 0 auto">Go back to this</button>` : ""}<button class="btn small" data-vdel="${v.id}" aria-label="Delete this version" style="flex:0 0 auto">✕</button></div>`; }).join("") || `<div class="empty">No saved versions yet.</div>`}</div>
+    <p class="note" style="margin:0">Versions are kept on this device only. Photos you've deleted for good won't come back with an older version. Going back can itself be undone.</p>`);
+  const sv = m.el.querySelector("#vSave");
+  if (sv) sv.onclick = () => { if (S.plan.example) { toast("Edit the example into your own house first."); return; } if (saveVersion(m.el.querySelector("#vName").value.trim().slice(0, 60))) { m.close(); toast("Version saved."); openVersions(); } else toast("This device is out of space for versions. Delete an old one first."); };
+  m.el.querySelectorAll("[data-vgo]").forEach(b => b.onclick = () => {
+    const v = versions().find(x => x.id === b.dataset.vgo); if (!v) return;
+    let p; try { p = JSON.parse(v.plan); } catch { } if (!validPlan(p)) { toast("That version couldn't be read."); return; }
+    saveVersion("Before going back to " + (v.name || fmtT(v.t)), false);
+    const before = JSON.stringify(S.plan); S.plan = migrate(p); S.sel = null; S.selItem = null; fixFloor();
+    commit(before); loadLocalPhotos(); m.close(); toast(`Back to ${v.name || "the version from " + fmtT(v.t)}. Undo, or the "Before going back" version, returns to where you were.`, 6000);
+  });
+  m.el.querySelectorAll("[data-vdel]").forEach(b => b.onclick = () => { try { localStorage.setItem(VKEY, JSON.stringify(versions().filter(x => x.id !== b.dataset.vdel))); } catch { } b.closest("[data-v]").remove(); });
+}
 function scheduleSave() {
   lsSet(LS_KEY, JSON.stringify(S.plan));
+  if (!S.plan.example) autoVersion();
   if (window.dbxChanged) window.dbxChanged();
   clearTimeout(store.timer);
   if (store.db && S.canWrite) { setSync("busy", "Saving…"); store.timer = setTimeout(flushSave, 700); }
@@ -693,7 +764,7 @@ const idb = {
   async del(k) { const d = await this.open(); return new Promise(res => { const t = d.transaction("p", "readwrite"); t.objectStore("p").delete(k); t.oncomplete = res; t.onerror = res; }); }
 };
 async function loadLocalPhotos() {
-  for (const r of S.plan.rooms) for (const p of r.photos) {
+  for (const p of [...S.plan.rooms.flatMap(r => r.photos), ...(S.plan.spare || [])]) {
     if (p.asset || localPhotoURL[p.id] !== undefined) continue;
     localPhotoURL[p.id] = null;
     try { const b = await idb.get(p.id); if (b) { localPhotoURL[p.id] = URL.createObjectURL(b); } } catch { }
@@ -744,7 +815,7 @@ function planMarkup(fid, o) {
   const k = o.k, fs = 12 / k, t = S.plan.wallT, out = [];
   let rooms = roomsOn(fid);
   const others = S.plan.floors.filter(f => f.id !== fid);
-  if (o.ghost) {
+  if (o.ghost && !S.layers.other) {
     const idx = S.plan.floors.findIndex(f => f.id === fid), nb = S.plan.floors[idx - 1] || S.plan.floors[idx + 1];
     if (nb) for (const r of roomsOn(nb.id)) out.push(`<polygon class="ghost" points="${r.pts.join(" ")}" stroke-width="${1.2 / k}" stroke-dasharray="${5 / k} ${4 / k}"/>`);
   }
@@ -754,6 +825,12 @@ function planMarkup(fid, o) {
   rooms = [...outs, ...ins];
   for (const r of ins) out.push(`<polygon class="room t${r.c % 7}" data-room="${r.id}" points="${r.pts.join(" ")}"/>`);
   for (const r of ins) out.push(`<polygon class="wall" points="${r.pts.join(" ")}" stroke-width="${t}"/>`);
+  const T = extT(), band = T - t, spansOf = {};
+  for (const r of ins) spansOf[r.id] = band > 0.004 ? outsideSpans(r) : edges(r).map(() => []);
+  if (band > 0.004) for (const r of ins) edges(r).forEach(e => { for (const [a0, b0, xs, xe] of spansOf[r.id][e.i]) {
+    const a = a0 - (xs ? T - t / 2 : 0), b = b0 + (xe ? T - t / 2 : 0), ox = -e.n[0] * T / 2, oy = -e.n[1] * T / 2;
+    out.push(`<line class="extw" x1="${e.a[0] + e.d[0] * a + ox}" y1="${e.a[1] + e.d[1] * a + oy}" x2="${e.a[0] + e.d[0] * b + ox}" y2="${e.a[1] + e.d[1] * b + oy}" stroke-width="${band}"/>`);
+  } });
   // openings: clear the wall, then draw the symbol
   for (const r of ins) {
     const es = edges(r);
@@ -768,6 +845,8 @@ function planMarkup(fid, o) {
       }
       const A = P(op.offset), B = P(op.offset + op.width);
       out.push(`<line class="gapl" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke-width="${t * 1.35}"/>`);
+      const ext = band > 0.004 && onOutside(spansOf[r.id][e.i], op.offset + op.width / 2), sh = ext ? -(T - t) / 2 : 0, tw = ext ? T : t;
+      if (ext) out.push(`<line class="gapl" x1="${A[0] - e.n[0] * T / 2}" y1="${A[1] - e.n[1] * T / 2}" x2="${B[0] - e.n[0] * T / 2}" y2="${B[1] - e.n[1] * T / 2}" stroke-width="${band * 1.3}"/>`);
       if (op.type === "door") {
         const hingeStart = op.hinge !== "end", out_ = op.swing === "out";
         const H = hingeStart ? A : B, F = hingeStart ? B : A, nn = out_ ? [-e.n[0], -e.n[1]] : e.n, w = op.width;
@@ -776,10 +855,10 @@ function planMarkup(fid, o) {
         out.push(`<path class="sym" d="M${F[0]},${F[1]} A${w},${w} 0 0 ${sweep} ${L[0]},${L[1]}" stroke-width="${1 / k}" stroke-dasharray="${3 / k} ${2 / k}"/>`);
       } else {
         for (const f of [-0.28, 0, 0.28]) {
-          const ox = e.n[0] * t * f, oy = e.n[1] * t * f;
+          const ox = e.n[0] * (tw * f + sh), oy = e.n[1] * (tw * f + sh);
           out.push(`<line class="win" x1="${A[0] + ox}" y1="${A[1] + oy}" x2="${B[0] + ox}" y2="${B[1] + oy}" stroke-width="${(f ? 1.2 : 0.8) / k}"/>`);
         }
-        for (const Q of [A, B]) out.push(`<line class="win" x1="${Q[0] - e.n[0] * t / 2}" y1="${Q[1] - e.n[1] * t / 2}" x2="${Q[0] + e.n[0] * t / 2}" y2="${Q[1] + e.n[1] * t / 2}" stroke-width="${1.2 / k}"/>`);
+        for (const Q of [A, B]) out.push(`<line class="win" x1="${Q[0] + e.n[0] * (sh - tw / 2)}" y1="${Q[1] + e.n[1] * (sh - tw / 2)}" x2="${Q[0] + e.n[0] * (sh + tw / 2)}" y2="${Q[1] + e.n[1] * (sh + tw / 2)}" stroke-width="${1.2 / k}"/>`);
       }
     }
   }
@@ -874,7 +953,7 @@ function renderPlan() {
     return `<g transform="translate(${st.x} ${st.y}) rotate(${st.rot})" pointer-events="none">${clip}<image href="${esc(photoURL(st))}" x="${-W / 2}" y="${-H / 2}" width="${W}" height="${H}" opacity="${st.opacity}" preserveAspectRatio="none"${c ? ` clip-path="url(#sc-${st.id})"` : ""}/></g>`;
   }).join("");
   svg.classList.toggle("aligning", !!S.siteAlign);
-  const marks = (S.siteStraight || []).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="${6 / k}" fill="#ff3b30" stroke="#fff" stroke-width="${2 / k}" pointer-events="none"/>`).join("");
+  const marks = otherFloorMarkup(k) + outlineMarkup(k) + walkMarkup(k) + (S.siteStraight || []).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="${6 / k}" fill="#ff3b30" stroke="#fff" stroke-width="${2 / k}" pointer-events="none"/>`).join("");
   svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${under ? `${under}<g class="gridover" pointer-events="none">${grid}</g>` : grid}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims, keyWalls: S.tab === "totals" && !S.siteAlign ? keyWalls(S.floor) : null })}${marks}</g>`;
 }
 function fit(fid) {
@@ -921,6 +1000,7 @@ svg.addEventListener("pointerdown", e => {
     }
     straightNote(); renderPlan(); return;
   }
+  if (S.trace) { drag = { type: "pan", trace: true, sc: [e.clientX, e.clientY], tx: S.tx, ty: S.ty, moved: false }; return; }
   if (alignSite()) { const st = alignSite(); drag = { type: "site", sc: [e.clientX, e.clientY], p0: toM(e.clientX, e.clientY), start: [st.x, st.y], before: JSON.stringify(S.plan), moved: false }; return; }
   const vtxEl = e.target.closest("[data-vtx]");
   if (vtxEl && S.canWrite && selRoom()) { const r = selRoom(); drag = { type: "vtx", i: +vtxEl.dataset.vtx, id: r.id, start: clone(r.pts), p0: toM(e.clientX, e.clientY), sc: [e.clientX, e.clientY], before: JSON.stringify(S.plan), moved: false }; return; }
@@ -1016,6 +1096,7 @@ function endPointer(e) {
   if (pinch) { if (pointers.size < 2) pinch = null; drag = null; return; }
   if (!drag) return;
   const d = drag; drag = null;
+  if (d.type === "pan" && !d.moved && d.trace) { traceTap(toM(e.clientX, e.clientY)); return; }
   if (d.type === "pan" && !d.moved) { if (S.sel) { S.sel = null; if (S.tab === "room") S.tab = "rooms"; renderAll(); } return; }
   if (d.type === "item") { if (d.moved) commit(d.before); else renderPane(); return; }
   if (d.type === "site" || d.type === "fac" || d.type === "sroom") { if (d.moved) commit(d.before); return; }
@@ -1087,8 +1168,36 @@ function renderRooms() {
     }
     parts.push(`</div>`);
   }
+  const sp = S.plan.spare || [];
+  if (sp.length) {
+    const opts = S.plan.rooms.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("");
+    parts.push(`<div class="sec"><h2>Spare photos · ${sp.length}</h2><p class="note" style="margin:0 0 6px">Photos kept aside, not in any room. Move one into a room when you know where it belongs.</p><div class="photos">${sp.map(p => { const u = photoURL(p); return `<div class="ph" data-sp="${p.id}">${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-spview="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
+      ${S.canWrite ? `<select data-spmove="${p.id}" aria-label="Move to a room"><option value="">Move to…</option><optgroup label="Rooms">${opts}</optgroup><optgroup label="House sides">${Object.entries(SIDE_LABEL).map(([k, v]) => `<option value="side:${k}">${v} photo${facades()[k] ? " (swap)" : ""}</option>`).join("")}</optgroup></select><div class="acts"><button data-spdel="${p.id}">Delete</button></div>` : ""}${p.from ? `<small class="muted" style="padding:2px 6px;font-size:11px">From ${esc(p.from)}</small>` : ""}</div>`; }).join("")}</div><div id="spConfirm"></div></div>`);
+  }
   parts.push(`<p class="note">Walls counts how many walls have a photo tagged to them. Measured means at least one wall in each direction has a real measurement.</p>`);
   pane.innerHTML = parts.join("");
+  pane.querySelectorAll("[data-spmove]").forEach(el => el.onchange = () => {
+    if (el.value.startsWith("side:")) {
+      const side = el.value.slice(5), p = S.plan.spare.find(x => x.id === el.dataset.spmove); if (!p) return;
+      if (!photoURL(p)) { toast("That photo is stored on another device."); el.value = ""; return; }
+      placeFacade({ id: p.id, side, w: p.w, h: p.h, ...(p.asset ? { asset: p.asset } : {}), ...(p.local ? { local: true } : {}), mpp: 0.01, u: 0, z: 0, opacity: 0.75 }, side);
+      el.value = ""; return;
+    }
+    const to = S.plan.rooms.find(x => x.id === el.value); if (!to) return;
+    edit(() => { const p = S.plan.spare.find(x => x.id === el.dataset.spmove); if (!p) return; S.plan.spare = S.plan.spare.filter(x => x !== p); const { from, ...ph } = p; to.photos.push({ ...ph, wall: null }); });
+    toast(`Moved to ${to.name}. Tag which wall it shows on the Room tab.`);
+  });
+  pane.querySelectorAll("[data-spview]").forEach(im => im.onclick = () => { const p = S.plan.spare.find(x => x.id === im.dataset.spview), u = p && photoURL(p); if (u) modal(p.from ? `Spare photo from ${p.from}` : "Spare photo", `<div class="viewer"><img src="${esc(u)}" alt="${esc(p.name)}"></div>`); });
+  pane.querySelectorAll("[data-spdel]").forEach(bt => bt.onclick = () => {
+    const box = pane.querySelector("#spConfirm");
+    box.innerHTML = `<div class="confirm"><span>Delete this photo for good?</span><button class="btn small danger" id="spYes">Delete photo</button><button class="btn small" id="spNo">Keep it</button></div>`;
+    box.querySelector("#spNo").onclick = () => box.innerHTML = "";
+    box.querySelector("#spYes").onclick = async () => {
+      const p = S.plan.spare.find(x => x.id === bt.dataset.spdel); if (!p) return;
+      edit(() => { S.plan.spare = S.plan.spare.filter(x => x !== p); }); S.undo.pop();
+      try { if (p.asset && store.assets) await store.assets.delete(p.asset); else await idb.del(p.id); } catch { }
+    };
+  });
 }
 function renderRoom() {
   const r = selRoom();
@@ -1169,7 +1278,7 @@ function renderRoom() {
     ${r.photos.length ? `<div class="photos">${r.photos.map(p => { const u = photoURL(p); return `<div class="ph" data-ph="${p.id}">${ro ? "" : `<label class="phsel"><input type="checkbox" data-psel="${p.id}" aria-label="Select photo"></label>`}
         ${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-measure="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
         <select data-tag="${p.id}" aria-label="Wall shown" ${ro ? "disabled" : ""}>${wallOpts(p.wall)}</select>
-        <div class="acts"><button data-measure="${p.id}" ${u ? "" : "disabled"}>Measure</button>${ro ? "" : `<button data-phdel="${p.id}">Delete</button>`}</div></div>`; }).join("")}</div>` : ""}
+        <div class="acts"><button data-measure="${p.id}" ${u ? "" : "disabled"}>Measure</button>${ro ? "" : `<button data-phdel="${p.id}">Remove</button>`}</div></div>`; }).join("")}</div>` : ""}
     ${ro ? "" : `<div class="drop" id="drop"><span>Take or choose photos of this room. One per wall, shot straight on, works best.</span><button class="btn" id="addPhotos">Add photos</button></div>`}
     <div id="phConfirm"></div>
     ${store.assets ? "" : `<p class="note">Photos are kept in this browser on this device.</p>`}
@@ -1238,8 +1347,9 @@ function bindRoom(r) {
   pane.querySelectorAll("[data-measure]").forEach(el => el.addEventListener("click", () => openMeasure(id, el.dataset.measure)));
   pane.querySelectorAll("[data-phdel]").forEach(b => b.addEventListener("click", () => {
     const box = pane.querySelector("#phConfirm");
-    box.innerHTML = `<div class="confirm"><span>Delete this photo for good?</span><button class="btn small danger" id="phYes">Delete photo</button><button class="btn small" id="phNo">Keep it</button></div>`;
+    box.innerHTML = `<div class="confirm"><span>Take this photo off the room?</span><button class="btn small primary" id="phSpare">Move to spare photos</button><button class="btn small danger" id="phYes">Delete for good</button><button class="btn small" id="phNo">Cancel</button></div>`;
     box.querySelector("#phNo").onclick = () => box.innerHTML = "";
+    box.querySelector("#phSpare").onclick = () => { edit(() => { const rr = R(), p = rr.photos.find(x => x.id === b.dataset.phdel); if (!p) return; rr.photos = rr.photos.filter(x => x.id !== p.id); (S.plan.spare ||= []).push({ ...p, wall: null, from: rr.name }); }); toast("Moved to Spare photos, on the Rooms tab."); };
     box.querySelector("#phYes").onclick = async () => {
       const rr = R(), p = rr.photos.find(x => x.id === b.dataset.phdel); if (!p) return;
       edit(() => { rr.photos = rr.photos.filter(x => x.id !== p.id); });
@@ -1254,13 +1364,14 @@ function bindRoom(r) {
     if (!picked.size) { bar.innerHTML = ""; return; }
     const others = S.plan.rooms.filter(x => x.id !== id);
     bar.innerHTML = `<div class="selbar"><b>${picked.size} selected</b>
-      ${others.length ? `<select id="phMoveTo"><option value="">Move to…</option>${others.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("")}</select>` : ""}
+      ${`<select id="phMoveTo"><option value="">Move to…</option><option value="__spare">Spare photos (not in a room)</option>${others.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("")}</select>`}
       ${AI() ? `<button class="btn small primary" id="phNewArea">Build a new area from these</button>` : ""}
       <button class="btn small" id="phSelAll">${picked.size === R().photos.length ? "Select none" : "Select all"}</button></div>`;
     const mv = bar.querySelector("#phMoveTo");
     if (mv) mv.onchange = () => {
-      const to = S.plan.rooms.find(x => x.id === mv.value); if (!to) return;
       const n = picked.size;
+      if (mv.value === "__spare") { edit(() => { const rr = R(), moving = rr.photos.filter(p => picked.has(p.id)); rr.photos = rr.photos.filter(p => !picked.has(p.id)); (S.plan.spare ||= []).push(...moving.map(p => ({ ...p, wall: null, from: rr.name }))); }); toast(`Put ${n} photo${n > 1 ? "s" : ""} in Spare photos, on the Rooms tab.`); return; }
+      const to = S.plan.rooms.find(x => x.id === mv.value); if (!to) return;
       edit(() => { const rr = R(), moving = rr.photos.filter(p => picked.has(p.id)); rr.photos = rr.photos.filter(p => !picked.has(p.id)); to.photos.push(...moving.map(p => ({ ...p, wall: null }))); });
       toast(`Moved ${n} photo${n > 1 ? "s" : ""} to ${to.name}.`);
     };
@@ -1298,7 +1409,7 @@ function bindRoom(r) {
     const w = pane.querySelector("#delWrap");
     w.innerHTML = `<span>Delete ${esc(R().name)}?</span><button class="btn danger" id="delYes">Delete</button><button class="btn" id="delNo">Cancel</button>`;
     w.querySelector("#delNo").onclick = renderPane;
-    w.querySelector("#delYes").onclick = () => { edit(() => { S.plan.rooms = S.plan.rooms.filter(x => x.id !== id); S.sel = null; S.tab = "rooms"; }); toast("Room deleted. Undo brings it back."); };
+    w.querySelector("#delYes").onclick = () => { const gone = R(), n = gone.photos.length; edit(() => { S.plan.rooms = S.plan.rooms.filter(x => x.id !== id); if (n) (S.plan.spare ||= []).push(...gone.photos.map(p => ({ ...p, wall: null, from: gone.name }))); S.sel = null; S.tab = "rooms"; }); toast(n ? `Room deleted. Its ${n} photo${n > 1 ? "s are" : " is"} kept in Spare photos. Undo brings the room back.` : "Room deleted. Undo brings it back.", 5000); };
   });
 }
 $("#photoInput").addEventListener("change", e => { const r = S.plan.rooms.find(x => x.id === e.target.dataset.room); if (r) addPhotos(r, e.target.files); });
@@ -1356,6 +1467,52 @@ function keyWalls(fid, n = 5) {
   }
   return out;
 }
+/* small gaps (and slight overlaps) between walls that should be back to back: [{ r, e, B, f, gap }] */
+function gapPairs(fid, max = 0.6) {
+  const out = [], rs = roomsOn(fid).filter(r => !isOut(r));
+  for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
+    const r = rs[i], B = rs[j];
+    for (const e of edges(r)) for (const f of edges(B)) {
+      if (e.n[0] * f.n[0] + e.n[1] * f.n[1] > -0.99) continue;
+      const gap = (f.a[0] - e.a[0]) * -e.n[0] + (f.a[1] - e.a[1]) * -e.n[1];
+      if (Math.abs(gap) < 0.01 || gap > max || gap < -0.3) continue;
+      let u0 = (f.a[0] - e.a[0]) * e.d[0] + (f.a[1] - e.a[1]) * e.d[1], u1 = (f.b[0] - e.a[0]) * e.d[0] + (f.b[1] - e.a[1]) * e.d[1];
+      if (u0 > u1) [u0, u1] = [u1, u0];
+      if (Math.min(e.len, u1) - Math.max(0, u0) < 0.3) continue;
+      out.push({ r, e: e.i, B, f: f.i, gap });
+    }
+  }
+  return out;
+}
+/* push one wall of each gap across so the two rooms sit back to back; walls next to tape-measured ones stay put */
+function closeGaps(fid) {
+  const before = JSON.stringify(S.plan); let moved = 0, stuck = 0; const done = new Set();
+  const fixedBy = (room, i) => { const n = room.pts.length; return !!(room.measured[(i + n - 1) % n] || room.measured[(i + 1) % n]); };
+  const tryMove = (room, i, dist) => {
+    if (fixedBy(room, i)) return false;
+    const e = edges(room)[i], n = room.pts.length, pts = room.pts.map(p => p.slice());
+    for (const k of [i, (i + 1) % n]) pts[k] = [r2(pts[k][0] - e.n[0] * dist), r2(pts[k][1] - e.n[1] * dist)];
+    if (edges({ pts }).some(x => x.len < 0.3) || shoelace(pts) <= 0) return false;
+    const old = edges(room); room.pts = pts; const ne = edges(room);
+    room.openings.forEach(o => clampOpening(room, o)); (room.items || []).forEach(it => clampItem(room, it));
+    return true;
+  };
+  for (let pass = 0; pass < 3; pass++) {
+    const list = gapPairs(fid); if (!list.length) break;
+    let any = false;
+    for (const g of list) {
+      const key = [g.r.id, g.e, g.B.id, g.f].join(); if (done.has(key)) continue;
+      // recheck after earlier moves
+      const e = edges(g.r)[g.e], f = edges(g.B)[g.f]; if (!e || !f) continue;
+      const gap = (f.a[0] - e.a[0]) * -e.n[0] + (f.a[1] - e.a[1]) * -e.n[1]; if (Math.abs(gap) < 0.01) { done.add(key); continue; }
+      const order = Object.keys(g.r.measured).length > Object.keys(g.B.measured).length || (Object.keys(g.r.measured).length === Object.keys(g.B.measured).length && area(g.r.pts) > area(g.B.pts)) ? [[g.B, g.f], [g.r, g.e]] : [[g.r, g.e], [g.B, g.f]];
+      if (order.some(([room, i]) => tryMove(room, i, gap))) { moved++; any = true; done.add(key); } else if (pass === 0) { stuck++; done.add(key); }
+    }
+    if (!any) break;
+  }
+  if (moved) commit(before);
+  toast(moved ? `Closed ${moved} gap${moved > 1 ? "s" : ""} between rooms.${stuck ? ` ${stuck} more sit between tape-measured walls, so they were left for you to check.` : ""} Undo puts them back.` : stuck ? "The gaps left are between tape-measured walls, so nothing was moved. Check those measurements." : "No gaps to close on this floor.", 6000);
+}
 function findGaps() {
   const g = [], cuts = computeCuts(S.plan);
   for (const f of S.plan.floors) {
@@ -1404,11 +1561,12 @@ function renderTotals() {
     <p class="note">${done} of ${S.plan.rooms.length} rooms have a photo of every wall and real measurements.</p>
   </div>
   <div class="sec">
-    <h2>Measure these next</h2>
+    <div class="row"><h2 class="grow" style="margin:0">Measure these next</h2>${S.canWrite && keyWalls(S.floor).length ? `<button class="btn small primary" id="walkStart">Start a measuring walk</button>` : ""}</div>
     ${(() => { const kw = keyWalls(S.floor); return kw.length ? `<p class="note" style="margin:0">A tape measure on these walls fixes the most. They're numbered on the plan. Type the length on the Room tab.</p><div class="list">${kw.map((c, i) => `<button class="gap" data-pick="${c.room.id}"><span class="k" style="background:var(--accent)"></span><span class="t" style="display:flex;flex-direction:column;min-width:0"><span><b>${i + 1}.</b> ${esc(c.room.name)}, ${esc(c.name.toLowerCase())} (about ${esc(fmtLen(c.len))})</span><small class="muted">${esc([c.fixes.length ? `Sets the size of ${c.fixes.join(" and ")}` : "", ...c.why].filter(Boolean).join("; "))}</small></span></button>`).join("")}</div>` : `<div class="empty">Every room on this floor has a measured wall each way.</div>`; })()}
   </div>
   <div class="sec">
     <h2>To finish the plan · ${gaps.length}</h2>
+    ${(() => { const n = S.canWrite ? gapPairs(S.floor).length : 0; return n ? `<div class="row" style="margin-bottom:8px"><span class="grow note" style="margin:0">${n} small gap${n > 1 ? "s or overlaps" : " or overlap"} between rooms on ${esc(floorOf({ floor: S.floor }).name)}.</span><button class="btn small primary" id="closeGaps">Close gaps</button></div>` : ""; })()}
     ${gaps.length ? `<div class="list">${gaps.slice(0, 60).map(x => `<button class="gap" data-pick="${x.room}"><span class="k ${x.lvl}"></span><span class="t" style="display:flex;flex-direction:column;min-width:0"><span>${esc(x.t)}</span><small class="muted">${esc(x.s)}</small></span></button>`).join("")}</div>` : `<div class="empty">Nothing missing. Every room is measured and photographed.</div>`}
   </div>
   <div class="sec">
@@ -1424,8 +1582,10 @@ function renderTotals() {
     <div class="row"><label class="field" style="width:140px">Extra for waste<select id="waste">${[5, 10, 15].map(w => `<option value="${w}" ${(S.waste || 10) === w ? "selected" : ""}>${w}%</option>`).join("")}</select></label></div>
     <div class="list">${S.plan.rooms.filter(r => !isOut(r)).sort((a, b) => S.plan.floors.findIndex(f => f.id === a.floor) - S.plan.floors.findIndex(f => f.id === b.floor)).map(r => `<div class="item"><span class="t"><span>${esc(r.name)}</span><small>${esc(floorOf(r).name)}</small></span><b class="num">${fmtArea(area(r.pts) * (1 + (S.waste || 10) / 100))}</b></div>`).join("")}</div>
   </div>
-  <div class="sec"><h2>Outside size</h2>${rows.filter(x => x.fp).map(x => `<p class="num" style="margin:0">${esc(x.f.name)}: ${fmtLen(x.fp.w + S.plan.wallT)} × ${fmtLen(x.fp.h + S.plan.wallT)}</p>`).join("") || `<p class="note">Add rooms to see the footprint.</p>`}</div>`;
+  <div class="sec"><h2>Outside size</h2>${rows.filter(x => x.fp).map(x => `<p class="num" style="margin:0">${esc(x.f.name)}: ${fmtLen(x.fp.w + 2 * extT() - S.plan.wallT)} × ${fmtLen(x.fp.h + 2 * extT() - S.plan.wallT)}</p>`).join("") || `<p class="note">Add rooms to see the footprint.</p>`}</div>`;
   const ws = pane.querySelector("#waste"); if (ws) ws.onchange = () => { S.waste = +ws.value; renderTotals(); };
+  const cg = pane.querySelector("#closeGaps"); if (cg) cg.onclick = () => closeGaps(S.floor);
+  const wk = pane.querySelector("#walkStart"); if (wk) wk.onclick = startWalk;
 }
 function renderPane() {
   for (const [id, t] of [["tabRooms", "rooms"], ["tabRoom", "room"], ["tabTotals", "totals"]]) $("#" + id).setAttribute("aria-selected", S.tab === t);
@@ -1448,14 +1608,15 @@ function renderTop() {
   $("#floorTabs").innerHTML = S.plan.floors.map(f => `<button data-floor="${f.id}" aria-pressed="${f.id === S.floor}">${esc(f.name)}</button>`).join("");
   $("#exampleBanner").hidden = !S.plan.example || !S.canWrite;
   $("#undoBtn").disabled = !S.undo.length;
-  $("#addBar").hidden = S.view !== "2d" || !S.canWrite; $("#zoomBar").hidden = S.view === "3d"; $("#sideBar").hidden = S.view !== "side"; if (S.view === "side") renderSideBar(); $("#hint").hidden = S.view !== "2d";
+  $("#addBar").hidden = S.view !== "2d" || !S.canWrite || !!S.trace || !!S.siteAlign || !!S.walk; $("#zoomBar").hidden = S.view === "3d"; $("#sideBar").hidden = S.view !== "side"; if (S.view === "side") renderSideBar(); $("#hint").hidden = S.view !== "2d" || !!S.trace;
   $("#bar3d").hidden = S.view !== "3d";
   document.querySelectorAll("#layersPop [data-only]").forEach(el => el.hidden = el.dataset.only !== S.view);
   document.querySelectorAll("#layersPop [data-ly]").forEach(el => el.checked = !!S.layers[el.dataset.ly]);
+  { const of = otherFloor(), l = $("#otherLbl"); if (l) { l.textContent = of ? `${of.name}, see-through` : "The other floor, see-through"; l.parentElement.hidden = !of || S.view !== "2d"; } }
   $("#emptyFloor").hidden = S.view !== "2d" || !S.canWrite || roomsOn(S.floor).length > 0;
   $("#v2d").setAttribute("aria-pressed", S.view === "2d"); $("#v3d").setAttribute("aria-pressed", S.view === "3d"); $("#vside").setAttribute("aria-pressed", S.view === "side");
 }
-$("#floorTabs").addEventListener("click", e => { const b = e.target.closest("[data-floor]"); if (!b) return; S.floor = b.dataset.floor; const r = selRoom(); if (r && r.floor !== S.floor) S.sel = null; renderAll(); });
+$("#floorTabs").addEventListener("click", e => { const b = e.target.closest("[data-floor]"); if (!b) return; if (S.trace) endTrace(); if (S.walk) endWalk(); S.floor = b.dataset.floor; const r = selRoom(); if (r && r.floor !== S.floor) S.sel = null; renderAll(); });
 function renderAll() { fixFloor(); renderTop(); renderPlan(); renderPane(); if (S.view === "3d") schedule3D(); }
 
 /* ---------- 3D ---------- */
@@ -1517,7 +1678,7 @@ function build3D(opts) {
       const shape = new THREE.Shape(r.pts.map(p => new THREE.Vector2(p[0], -p[1])));
       const fgeo = new THREE.ExtrudeGeometry(shape, { depth: slab, bevelEnabled: false }); fgeo.rotateX(-Math.PI / 2);
       const fm = new THREE.Mesh(fgeo, floorMats[r.c % 7]); fm.position.y = elev - slab; fm.name = r.name + " floor"; rg.add(fm);
-      const h = roomH(r), names = wallNames(r);
+      const h = roomH(r), names = wallNames(r), T3 = extT() - t / 2, oSp = T3 > 0.004 ? outsideSpans(r) : null;
       edges(r).forEach(e => {
         const list = (cuts[r.id][e.i] || []).slice().sort((a, b) => a.s - b.s);
         const pieces = []; let cur = 0;
@@ -1539,6 +1700,14 @@ function build3D(opts) {
           const mid = (s + en) / 2;
           m.position.set(e.a[0] + e.d[0] * mid + e.n[0] * t / 4, elev + (y0 + y1) / 2, e.a[1] + e.d[1] * mid + e.n[1] * t / 4);
           m.rotation.y = Math.atan2(-e.d[1], e.d[0]); m.name = `${r.name} ${names[e.i]}`; rg.add(m);
+          // the outer skin of an outside wall
+          if (oSp) for (const [a0, b0, xs, xe] of oSp[e.i]) {
+            let s2 = Math.max(s, a0), e2 = Math.min(en, b0); if (e2 - s2 < 0.005) continue;
+            if (xs && s2 < 0.001) s2 -= T3; if (xe && e2 > e.len - 0.001) e2 += T3;
+            const o = new THREE.Mesh(new THREE.BoxGeometry(e2 - s2, y1 - y0, T3), wallMat), md = (s2 + e2) / 2;
+            o.position.set(e.a[0] + e.d[0] * md - e.n[0] * T3 / 2, elev + (y0 + y1) / 2, e.a[1] + e.d[1] * md - e.n[1] * T3 / 2);
+            o.rotation.y = m.rotation.y; o.name = `${r.name} ${names[e.i]} outside`; rg.add(o);
+          }
         }
       });
       if (L.photos && opts.photos !== false) {
@@ -1621,6 +1790,8 @@ function setView(v) {
   const was = S.view; if (was === v) return;
   if (was === "2d") S.planView = { k: S.k, tx: S.tx, ty: S.ty }; else if (was === "side") S.sideView = { k: S.k, tx: S.tx, ty: S.ty };
   if (S.siteAlign && v !== "2d") endSiteAlign();
+  if (S.trace && v !== "2d") endTrace();
+  if (S.walk && v !== "2d") endWalk();
   S.view = v; $("#plan").hidden = v === "3d"; $("#three").hidden = v !== "3d";
   if (v === "2d" && S.planView) Object.assign(S, S.planView);
   if (v === "side") { if (S.sideView) Object.assign(S, S.sideView); else fitSide(); }
@@ -2322,6 +2493,7 @@ async function openSite() {
         <label class="row" style="gap:8px;font-size:13px">See-through<input type="range" data-sop min="0.1" max="1" step="0.05" value="${st.opacity}" style="flex:1"></label>
         <div class="row"><button class="btn small primary" data-salign>Line it up</button><button class="btn small" data-sscale>Set the scale</button><button class="btn small" data-scrop>Crop</button><button class="btn small danger" data-sdel>Remove</button></div></div>`).join("")}</div>` : ""}
     <div class="drop"><span>${list.length ? "Add another, such as the map with boundary lines." : "Take a screenshot with the map's scale bar showing, or include a wall of the house you've measured."}</span><button class="btn ${list.length ? "" : "primary"}" id="sNew">${list.length ? "Add another screenshot" : "Choose a screenshot"}</button></div>
+    ${list.length ? `<div class="row"><button class="btn" id="sTrace">${outlineOf(S.floor) ? "Change the house outline" : "Trace the house outline"}</button><span class="note" style="margin:0;flex:1;min-width:160px">Tap the corners of the outside of the house on the photo, then fit your rooms inside it.</span></div>` : ""}
     <p class="note" style="margin:0">Site photos show in the 2D plan only. They stay on this device${store.assets ? " with the plan" : ""} and are left out of exports. Turn them all off at once under Show.</p>`);
   const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
   inp.onchange = async () => {
@@ -2336,6 +2508,7 @@ async function openSite() {
     } catch (e) { toast((e && e.message) || "That image couldn't be used."); }
   };
   m.el.querySelector("#sNew").onclick = () => { inp.value = ""; inp.click(); };
+  if (m.el.querySelector("#sTrace")) m.el.querySelector("#sTrace").onclick = () => { m.close(); startTrace(); };
   m.el.querySelectorAll("[data-site]").forEach(box => {
     const id = box.dataset.site, st = () => sites().find(x => x.id === id);
     box.querySelector("[data-sshow]").onchange = e => edit(() => { st().hidden = !e.target.checked; });
@@ -2564,25 +2737,32 @@ function renderSideBar() {
   on("facMove", () => { S.facMove = !S.facMove; renderAll(); });
   on("facScale", () => calibrateSite(clone(f), f, { intro: facIntro, done: mpp => { const before = JSON.stringify(S.plan); f.mpp = mpp; commit(before); fitSide(); renderAll(); } }));
   on("facCrop", () => cropPhoto(f, "Save crop", () => renderAll()));
-  on("facDel", async () => { const old = f; edit(() => { delete facades()[S.side]; S.facMove = false; }); try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } });
+  on("facDel", () => { const old = f; edit(() => { delete facades()[S.side]; S.facMove = false; facadeToSpare(old); }); toast("Moved to Spare photos, on the Rooms tab. Delete it there to remove it for good.", 5000); });
+}
+/* a house-side photo that's taken off or replaced is kept in Spare photos */
+function facadeToSpare(f) { if (!f) return; (S.plan.spare ||= []).push({ id: f.id, name: `${SIDE_LABEL[f.side] || "Side"} of the house`, w: f.w, h: f.h, ...(f.asset ? { asset: f.asset } : {}), ...(f.local ? { local: true } : {}), wall: null, from: `${SIDE_LABEL[f.side] || "House side"} photo` }); }
+/* scale, crop and line up a new photo for one side of the house */
+function placeFacade(ns, side) {
+  const old = facades()[side], w = ns.w, h = ns.h;
+  const placed = mpp => {
+    const ext = sideExtent(side), before = JSON.stringify(S.plan);
+    ns.mpp = mpp; ns.u = r2((ext.u0 + ext.u1) / 2); ns.z = r2(h * mpp / 2 - 0.3);
+    if (S.plan.spare) S.plan.spare = S.plan.spare.filter(x => x.id !== ns.id);
+    facades()[side] = ns; if (old && old.id !== ns.id) facadeToSpare(old); commit(before);
+    cropPhoto(ns, "Next: line it up", () => { S.side = side; S.facMove = true; if (S.view !== "side") setView("side"); fitSide(); renderAll(); });
+  };
+  calibrateSite(ns, null, { intro: facIntro, done: placed, skip: "Size it by eye", onSkip: () => { const ext = sideExtent(side); placed(Math.max(4, ext.u1 - ext.u0) * 1.25 / w); toast("Now stretch it with the Size buttons until the house's corners match the rooms.", 6000); } });
 }
 const facIntro = "Mark the two ends of something whose size you know: the front door's height (usually about 2.0 m), a window you've measured, or the length of a wall.";
 const facadeInput = document.createElement("input"); facadeInput.type = "file"; facadeInput.accept = "image/*";
 facadeInput.onchange = async () => {
   const file = facadeInput.files[0]; facadeInput.value = ""; if (!file) return;
   try {
-    const { blob, w, h } = await downscale(file, 3000, 0.88), side = S.side, old = facades()[side];
+    const { blob, w, h } = await downscale(file, 3000, 0.88), side = S.side;
     const ns = { id: uid(), side, w, h, mpp: 0.01, u: 0, z: 0, opacity: 0.75 };
     if (store.assets) { const up = await store.assets.upload(blob, { type: "image/jpeg" }); ns.asset = up.id; }
     else { await idb.put(ns.id, blob); localPhotoURL[ns.id] = URL.createObjectURL(blob); ns.local = true; }
-    const placed = mpp => {
-      const ext = sideExtent(side), before = JSON.stringify(S.plan);
-      ns.mpp = mpp; ns.u = r2((ext.u0 + ext.u1) / 2); ns.z = r2(h * mpp / 2 - 0.3);
-      facades()[side] = ns; commit(before);
-      if (old) { (async () => { try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } })(); }
-      cropPhoto(ns, "Next: line it up", () => { S.side = side; S.facMove = true; if (S.view !== "side") setView("side"); fitSide(); renderAll(); });
-    };
-    calibrateSite(ns, null, { intro: facIntro, done: placed, skip: "Size it by eye", onSkip: () => { const ext = sideExtent(side); placed(Math.max(4, ext.u1 - ext.u0) * 1.25 / w); toast("Now stretch it with the Size buttons until the house's corners match the rooms.", 6000); } });
+    placeFacade(ns, side);
   } catch (e) { toast((e && e.message) || "That image couldn't be used."); }
 };
 $("#sideTabs").addEventListener("click", e => { const b = e.target.closest("[data-side]"); if (!b) return; S.side = b.dataset.side; S.facMove = false; fitSide(); renderAll(); });
@@ -2645,6 +2825,127 @@ function startSiteAlign(id) {
 function endSiteAlign() { S.siteStraight = null; straightNote(); S.siteAlign = null; $("#siteBar").hidden = true; $("#addBar").hidden = false; renderAll(); }
 $("#siteBtn").onclick = openSite;
 $("#siteDone").onclick = endSiteAlign;
+/* ---------- measuring walk: go round the house with a tape, one useful wall at a time ---------- */
+function walkNext() {
+  const w = S.walk; if (!w) return;
+  const c = keyWalls(S.floor, 200).find(x => !w.skip.has(x.room.id + ":" + x.wall));
+  if (!c) { const n = w.n; endWalk(); toast(n ? `Measuring walk done: ${n} wall${n > 1 ? "s" : ""} measured. Every room on this floor has a measured wall each way${w.skip.size ? ", apart from the ones you skipped" : ""}.` : "Every room on this floor already has a measured wall each way.", 6000); return; }
+  w.room = c.room.id; w.wall = c.wall; S.sel = c.room.id; S.selItem = null;
+  const left = keyWalls(S.floor, 200).filter(x => !w.skip.has(x.room.id + ":" + x.wall)).length;
+  $("#walkTitle").textContent = `Measuring walk · ${c.room.name}`;
+  $("#walkNote").textContent = `${c.name}, shown in orange: about ${fmtLen(c.len)} on the plan. Measure along the floor from corner to corner, inside the room. ${left > 1 ? `About ${left} more to go on this floor.` : "Last one."}`;
+  const inp = $("#walkLen"); inp.value = ""; inp.placeholder = S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.85";
+  const r = c.room, b = bbox(r.pts), W = svg.clientWidth, H = svg.clientHeight, k = Math.max(2, Math.min(400, Math.min(W / (b.w + 3), (H - 200) / (b.h + 3))));
+  S.k = k; S.tx = W / 2 - (b.x0 + b.w / 2) * k; S.ty = (H - 160) / 2 - (b.y0 + b.h / 2) * k;
+  renderAll(); setTimeout(() => { try { inp.focus({ preventScroll: true }); } catch { } }, 50);
+}
+function walkMarkup(k) {
+  const w = S.walk; if (!w || S.view !== "2d") return "";
+  const r = S.plan.rooms.find(x => x.id === w.room), e = r && edges(r)[w.wall]; if (!e) return "";
+  return `<line x1="${e.a[0]}" y1="${e.a[1]}" x2="${e.b[0]}" y2="${e.b[1]}" stroke="#E8590C" stroke-width="${7 / k}" stroke-linecap="round" pointer-events="none"/>`;
+}
+function startWalk() {
+  if (S.view !== "2d") $("#v2d").click();
+  if (S.trace) endTrace(); if (S.siteAlign) endSiteAlign();
+  S.walk = { skip: new Set(), n: 0 }; $("#walkBar").hidden = false; $("#addBar").hidden = true;
+  walkNext();
+}
+function endWalk() { S.walk = null; $("#walkBar").hidden = true; renderAll(); }
+$("#walkDone").onclick = endWalk;
+$("#walkSkip").onclick = () => { const w = S.walk; if (!w) return; w.skip.add(w.room + ":" + w.wall); walkNext(); };
+const walkSave = () => {
+  const w = S.walk; if (!w) return;
+  const v = parseLen($("#walkLen").value); if (!v || v < 0.2 || v > 60) { toast("Type the length you measured, like 3.85 or 385 cm."); return; }
+  const r = S.plan.rooms.find(x => x.id === w.room); if (!r) return walkNext();
+  const before = JSON.stringify(S.plan);
+  if (!setEdgeLength(r, w.wall, v)) { toast("That length doesn't fit this room's shape. Check it, or skip this wall."); return; }
+  r.measured[w.wall] = true; r.openings.forEach(o => clampOpening(r, o)); (r.items || []).forEach(it => clampItem(r, it));
+  w.n++; commit(before); walkNext();
+};
+$("#walkSave").onclick = walkSave;
+$("#walkLen").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); walkSave(); } });
+/* the floor below (or, on the ground floor, the one above) drawn see-through over this one, to line rooms up */
+const otherFloor = () => { const i = S.plan.floors.findIndex(f => f.id === S.floor); return S.plan.floors[i - 1] || S.plan.floors[i + 1] || null; };
+function otherFloorMarkup(k) {
+  const of = otherFloor(); if (!S.layers.other || !of) return "";
+  const fs = 11 / k, T = extT(), t = S.plan.wallT;
+  return `<g pointer-events="none" class="otherfl">${roomsOn(of.id).filter(r => !isOut(r)).map(r => { const c = centroid(r.pts);
+    return `<polygon points="${r.pts.join(" ")}" fill="#3B6FB6" fill-opacity=".10" stroke="#3B6FB6" stroke-opacity=".9" stroke-width="${2 / k}" stroke-dasharray="${6 / k} ${3 / k}"/><text x="${c[0]}" y="${c[1]}" dy="${2.2 * fs}" font-size="${fs}" text-anchor="middle" fill="#2D5A99" stroke="var(--paper)" stroke-width="${3 / k}" paint-order="stroke" font-style="italic">${esc(r.name)} (${esc(of.name)})</text>`; }).join("")}${(() => { const ol = outlineOf(of.id); return ol ? `<polygon points="${ol.join(" ")}" fill="none" stroke="#3B6FB6" stroke-width="${1.2 / k}" stroke-dasharray="${2 / k} ${3 / k}"/>` : ""; })()}</g>`;
+}
+/* ---------- house outline traced on the site photo (outside face of the walls), one per floor ---------- */
+const outlineOf = fid => { const o = S.plan.outlines && S.plan.outlines[fid]; return Array.isArray(o) && o.length >= 3 ? o : null; };
+function outlineMarkup(k) {
+  if (S.view !== "2d" || (!S.trace && S.layers.site === false)) return "";
+  const pts = S.trace ? S.trace.pts : outlineOf(S.floor); if (!pts || !pts.length) return "";
+  const closed = !S.trace || S.trace.closed, fs = 11 / k, out = [];
+  out.push(`<${closed ? "polygon" : "polyline"} points="${pts.join(" ")}" fill="none" stroke="#E8590C" stroke-width="${2.2 / k}" stroke-dasharray="${7 / k} ${4 / k}" pointer-events="none"/>`);
+  const n = pts.length;
+  for (let i = 0; i < (closed ? n : n - 1); i++) {
+    const a = pts[i], b = pts[(i + 1) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (L * k < 40) continue;
+    let g = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI; if (g > 90 || g <= -90) g -= 180;
+    const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    out.push(`<text x="${mx}" y="${my}" font-size="${fs}" text-anchor="middle" dy="${-0.5 * fs}" fill="#B8430A" stroke="var(--paper)" stroke-width="${3 / k}" paint-order="stroke" font-weight="600" transform="rotate(${g} ${mx} ${my})" pointer-events="none">${fmtLen(L)}</text>`);
+  }
+  if (S.trace) pts.forEach((q, i) => out.push(`<circle cx="${q[0]}" cy="${q[1]}" r="${(i === 0 && !closed ? 9 : 6) / k}" fill="${i === 0 ? "#E8590C" : "#fff"}" stroke="#E8590C" stroke-width="${2 / k}" pointer-events="none"/>`));
+  return out.join("");
+}
+function startTrace() {
+  if (S.view !== "2d") $("#v2d").click();
+  if (S.siteAlign) endSiteAlign();
+  S.sel = null; S.layers.site = true;
+  const old = outlineOf(S.floor);
+  S.trace = { pts: old ? clone(old) : [], closed: !!old };
+  $("#traceBar").hidden = false; $("#addBar").hidden = true;
+  traceNote(); renderAll();
+}
+function traceNote() {
+  const t = S.trace; if (!t) return;
+  $("#traceNote").textContent = t.closed ? `Outline done: ${fmtLen(outlineSize(t.pts).w)} × ${fmtLen(outlineSize(t.pts).h)} overall. Fit rooms inside sizes and places this floor's rooms to match it.` : !t.pts.length ? "Zoom in and tap each outside corner of the house on the photo, going round the house. Drag to move around." : t.pts.length < 3 ? "Keep tapping the corners in order." : "Keep going. Tap the first corner (the orange dot) to close the outline.";
+  $("#traceFit").disabled = !t.closed; $("#traceUndo").disabled = !t.pts.length;
+}
+const outlineSize = pts => bbox(pts);
+function traceTap(q) {
+  const t = S.trace; if (!t || t.closed) return;
+  if (t.pts.length >= 3 && Math.hypot(q[0] - t.pts[0][0], q[1] - t.pts[0][1]) * S.k < 22) { t.closed = true; saveOutline(); traceNote(); renderPlan(); return; }
+  const p = t.pts[t.pts.length - 1];
+  if (p) { // keep walls square to the grid when the tap is within a few degrees of it
+    const dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy), a = Math.atan2(dy, dx), sn = Math.round(a / (Math.PI / 4)) * Math.PI / 4;
+    if (Math.abs(a - sn) < 4 * Math.PI / 180) q = [p[0] + Math.cos(sn) * L, p[1] + Math.sin(sn) * L];
+  }
+  t.pts.push([r2(q[0]), r2(q[1])]); traceNote(); renderPlan();
+}
+function saveOutline() {
+  const t = S.trace; if (!t) return;
+  edit(() => { S.plan.outlines ||= {}; if (t.closed && t.pts.length >= 3) { const pts = shoelace(t.pts) < 0 ? t.pts.slice().reverse() : t.pts.slice(); S.plan.outlines[S.floor] = clone(pts); } else delete S.plan.outlines[S.floor]; });
+}
+function endTrace() { if (S.trace && !S.trace.closed && S.trace.pts.length >= 3) { S.trace.closed = true; saveOutline(); } S.trace = null; $("#traceBar").hidden = true; $("#addBar").hidden = false; renderAll(); }
+$("#traceDone").onclick = endTrace;
+$("#traceUndo").onclick = () => { const t = S.trace; if (!t || !t.pts.length) return; if (t.closed) { t.closed = false; saveOutline(); } else t.pts.pop(); traceNote(); renderPlan(); };
+$("#traceClear").onclick = () => { const t = S.trace; if (!t) return; const had = t.closed; t.pts = []; t.closed = false; if (had) saveOutline(); traceNote(); renderPlan(); };
+$("#traceFit").onclick = () => fitRoomsToOutline(S.floor);
+/* stretch and move this floor's rooms so the outside of their walls fills the outline's overall length and width */
+function fitRoomsToOutline(fid) {
+  const ol = outlineOf(fid), rs = roomsOn(fid).filter(r => !isOut(r)); if (!ol || !rs.length) { toast(rs.length ? "Trace the outline first." : "Add rooms on this floor first."); return; }
+  const g = extT() - S.plan.wallT / 2, B = bbox(rs.flatMap(r => r.pts)), O = bbox(ol);
+  const locked = rs.some(r => Object.values(r.measured || {}).some(Boolean));
+  let sx = (O.w - 2 * g) / B.w, sy = (O.h - 2 * g) / B.h;
+  if (locked || !(sx > 0.4 && sx < 2.5 && sy > 0.4 && sy < 2.5)) sx = sy = 1;
+  const before = JSON.stringify(S.plan);
+  const X = x => r2(O.x0 + g + (x - B.x0) * sx), Y = y => r2(O.y0 + g + (y - B.y0) * sy);
+  const fx = sx === 1 && sy === 1 ? (x => r2(x + (O.x0 + O.w / 2) - (B.x0 + B.w / 2))) : X, fy = sx === 1 && sy === 1 ? (y => r2(y + (O.y0 + O.h / 2) - (B.y0 + B.h / 2))) : Y;
+  const moveOnly = sx === 1 && sy === 1;
+  for (const r of S.plan.rooms.filter(r => r.floor === fid && (moveOnly || !isOut(r)))) { // gardens move along when the house only moves, and keep their size
+    const old = edges(r);
+    r.pts = r.pts.map(([x, y]) => [fx(x), fy(y)]);
+    const ne = edges(r);
+    r.openings.forEach(o => { const f = ne[o.edge] && old[o.edge] ? ne[o.edge].len / old[o.edge].len : 1; if (o.type !== "open") o.offset = r2(o.offset * f); clampOpening(r, o); });
+    (r.items || []).forEach(it => { const f = ne[it.wall] && old[it.wall] ? ne[it.wall].len / old[it.wall].len : 1; it.along = r2(it.along * f); clampItem(r, it); });
+  }
+  commit(before);
+  const msg = sx === 1 && sy === 1 ? (locked ? `Some walls are tape-measured, so the rooms were only moved into the outline, not resized. The house is ${fmtLen(B.w + 2 * g)} × ${fmtLen(B.h + 2 * g)}; the outline is ${fmtLen(O.w)} × ${fmtLen(O.h)}.` : "The rooms are too far from the outline's size to stretch, so they were only moved into it.")
+    : `Rooms stretched ${((sx - 1) * 100).toFixed(1)}% across and ${((sy - 1) * 100).toFixed(1)}% down to fill the outline. Undo puts them back.`;
+  toast(msg, 7000);
+}
 function straightNote() { const n = S.siteStraight; $("#siteStraightNote").textContent = !n ? "" : n.length ? "Now tap the other end of that wall." : "Tap one end of a long, straight house wall on the photo."; $("#siteStraight").textContent = n ? "Cancel" : "Straighten to the grid"; }
 $("#siteStraight").onclick = () => { S.siteStraight = S.siteStraight ? null : []; straightNote(); renderPlan(); };
 document.querySelectorAll("[data-srot]").forEach(b => b.onclick = () => { const st = alignSite(); if (!st) return; const before = JSON.stringify(S.plan); st.rot = Math.round((((st.rot + +b.dataset.srot) % 360 + 360) % 360) * 100) / 100; commit(before); renderPlan(); });
@@ -2757,7 +3058,10 @@ function openSettings() {
       <label class="field">House name<input id="sName" value="${esc(S.plan.name)}" ${ro ? "disabled" : ""}></label>
       <label class="field">Units<select id="sUnits"><option value="m" ${S.plan.units === "m" ? "selected" : ""}>Metric (m)</option><option value="ft" ${S.plan.units === "ft" ? "selected" : ""}>Imperial (ft, in)</option></select></label>
       <label class="field">Interior wall thickness<input class="num" id="sWall" value="${esc(fmtIn(S.plan.wallT))}" ${ro ? "disabled" : ""}></label>
+      <label class="field">Outside wall thickness<input class="num" id="sExt" value="${esc(fmtIn(extT()))}" ${ro ? "disabled" : ""}></label>
     </div>
+    <p class="note" style="margin:4px 0 0">Outside walls grow outwards, so rooms keep their inside sizes. A timber-framed NZ house with weatherboards is about 15 to 20 cm; brick veneer is about 25 to 30 cm.</p>
+    <div class="sec"><div class="row"><h2 class="grow" style="margin:0">Saved versions</h2><button class="btn small" id="sVersions">Open saved versions</button></div><p class="note" style="margin:4px 0 0">Copies of the plan you can go back to.</p></div>
     <div class="sec"><h2>Floors</h2>
       ${S.plan.floors.map((f, i) => `<div class="grid3" data-fl="${f.id}">
         <label class="field">Name<input data-ff="name" value="${esc(f.name)}" ${ro ? "disabled" : ""}></label>
@@ -2790,6 +3094,7 @@ function openSettings() {
   }
   if (ro) return;
   el.querySelector("#sName").onchange = e => edit(() => S.plan.name = e.target.value.trim() || "My house");
+  el.querySelector("#sExt").onchange = e => { const v = parseLen(e.target.value); if (v && v >= 0.05 && v <= 0.8) edit(() => S.plan.extT = Math.max(v, S.plan.wallT)); else toast("Use a thickness between 5 cm and 80 cm."); };
   el.querySelector("#sWall").onchange = e => { const v = parseLen(e.target.value); if (v && v >= 0.05 && v <= 0.5) edit(() => S.plan.wallT = v); else toast("Use a thickness between 5 cm and 50 cm."); };
   el.querySelectorAll("[data-fl]").forEach(row => row.querySelectorAll("[data-ff]").forEach(inp => inp.onchange = () => {
     const f = S.plan.floors.find(x => x.id === row.dataset.fl), k = inp.dataset.ff;
@@ -2797,6 +3102,7 @@ function openSettings() {
     else { const v = parseLen(inp.value); if (v != null && v >= (k === "slab" ? 0 : 1.5) && v < 8) edit(() => f[k] = v); else toast("That height wasn't understood."); }
   }));
   el.querySelector("#addFloor").onclick = () => { edit(() => S.plan.floors.push({ id: "f" + uid(), name: `Floor ${S.plan.floors.length + 1}`, height: 2.4, slab: 0.25 })); m.close(); openSettings(); };
+  el.querySelector("#sVersions").onclick = () => { m.close(); openVersions(); };
   el.querySelector("#rmFloor").onclick = () => { edit(() => S.plan.floors.pop()); m.close(); openSettings(); };
   el.querySelector("#resetBtn").onclick = () => {
     const w = el.querySelector("#resetWrap");
@@ -2948,7 +3254,7 @@ async function exportProjectZip() {
   if (!window.JSZip) { toast("The zip tool couldn't load. Check your connection and reload."); return; }
   const zip = new JSZip(), n = slug(S.plan.name); let missing = 0;
   zip.file("project.json", JSON.stringify(S.plan, null, 1));
-  for (const p of [...S.plan.rooms.flatMap(r => r.photos), ...(S.plan.sites || []), ...Object.values(S.plan.facades || {})]) {
+  for (const p of [...S.plan.rooms.flatMap(r => r.photos), ...(S.plan.spare || []), ...(S.plan.sites || []), ...Object.values(S.plan.facades || {})]) {
     try { zip.file(`photos/${p.id}.jpg`, await photoBlob(p)); } catch { missing++; }
   }
   setSync("busy", "Packing project…");
@@ -2961,7 +3267,7 @@ async function readProjectFile(f) {
     if (!window.JSZip) throw 0;
     const zip = await JSZip.loadAsync(f), pj = zip.file("project.json"); if (!pj) throw 0;
     const p = JSON.parse(await pj.async("string")); if (!validPlan(p)) throw 0;
-    const all = [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.sites) ? p.sites : []), ...(p.facades && typeof p.facades === "object" ? Object.values(p.facades) : [])];
+    const all = [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.spare) ? p.spare : []), ...(Array.isArray(p.sites) ? p.sites : []), ...(p.facades && typeof p.facades === "object" ? Object.values(p.facades) : [])];
     let i = 0, total = all.length;
     for (const ph of all) {
       const zf = zip.file(`photos/${ph.id}.jpg`); if (!zf) continue;
@@ -3084,7 +3390,7 @@ async function dbxPhotoNames() {
   while (res) { res.entries.forEach(e => have.add(e.name)); res = res.has_more ? await dbxRpc("files/list_folder/continue", { cursor: res.cursor }) : null; }
   return DBX.have = have;
 }
-const planPhotos = p => [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.sites) ? p.sites : []), ...Object.values(p.facades || {})];
+const planPhotos = p => [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.spare) ? p.spare : []), ...(Array.isArray(p.sites) ? p.sites : []), ...Object.values(p.facades || {})];
 async function dbxPush(force) {
   const meta = await dbxRpc("files/get_metadata", { path: "/project.json" });
   if (meta && meta.rev !== DBX.rev() && !force) return dbxConflict(meta);
