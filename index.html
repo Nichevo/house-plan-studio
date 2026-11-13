@@ -751,8 +751,39 @@ const selRoom = () => S.plan.rooms.find(r => r.id === S.sel) || null;
 /* ---------- storage: shared db + assets when available, this device otherwise ---------- */
 const store = { db: null, assets: null, downloads: null, sample: null, user: null, ready: false, saving: false, again: false, timer: 0, lastRemote: 0 };
 function setSync(state, text) { const el = $("#sync"); el.dataset.s = state; el.lastElementChild.textContent = text; }
+/* ---------- saved versions: copies of the plan kept on this device (photos are shared, not copied) ---------- */
+const VKEY = "house-versions";
+function versions() { try { const v = JSON.parse(lsGet(VKEY) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } }
+function saveVersion(name, auto) {
+  if (!S.plan || S.plan.example) return false;
+  let list = versions(); list.unshift({ id: uid(), t: Date.now(), name: name || "", auto: !!auto, plan: JSON.stringify(S.plan) });
+  // keep every named version, and the 8 newest automatic ones
+  let autos = 0; list = list.filter(v => !v.auto || ++autos <= 8);
+  while (list.length) { try { localStorage.setItem(VKEY, JSON.stringify(list)); return true; } catch { const i = list.map(v => v.auto).lastIndexOf(true); if (i > 0) list.splice(i, 1); else if (list.length > 1) list.pop(); else return false; } }
+  return false;
+}
+function autoVersion() { const v = versions().find(x => x.auto); if (!v || Date.now() - v.t > 20 * 3600e3) saveVersion("", true); }
+function openVersions() {
+  const fmtT = t => new Date(t).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+  const m = modal("Saved versions", `
+    <p style="margin:0">Save a copy of the plan before big changes, and go back to it if you don't like how things turn out. A copy is also kept automatically once a day while you work.</p>
+    ${S.canWrite ? `<div class="row"><input class="inp" id="vName" placeholder="Name, e.g. Before moving the kitchen" style="flex:1;min-width:160px"><button class="btn primary" id="vSave">Save this version</button></div>` : ""}
+    <div class="list" id="vList">${versions().map(v => { let info = ""; try { const p = JSON.parse(v.plan); info = `${p.rooms.filter(r => !isOut(r)).length} rooms`; } catch { } return `<div class="item" data-v="${v.id}" style="cursor:default;flex-wrap:wrap"><span class="t" style="flex:1;min-width:140px"><span>${esc(v.name || (v.auto ? "Automatic copy" : "Saved version"))}</span><small class="muted">${esc(fmtT(v.t))}${info ? " · " + info : ""}</small></span>${S.canWrite ? `<button class="btn small" data-vgo="${v.id}" style="flex:0 0 auto">Go back to this</button>` : ""}<button class="btn small" data-vdel="${v.id}" aria-label="Delete this version" style="flex:0 0 auto">✕</button></div>`; }).join("") || `<div class="empty">No saved versions yet.</div>`}</div>
+    <p class="note" style="margin:0">Versions are kept on this device only. Photos you've deleted for good won't come back with an older version. Going back can itself be undone.</p>`);
+  const sv = m.el.querySelector("#vSave");
+  if (sv) sv.onclick = () => { if (S.plan.example) { toast("Edit the example into your own house first."); return; } if (saveVersion(m.el.querySelector("#vName").value.trim().slice(0, 60))) { m.close(); toast("Version saved."); openVersions(); } else toast("This device is out of space for versions. Delete an old one first."); };
+  m.el.querySelectorAll("[data-vgo]").forEach(b => b.onclick = () => {
+    const v = versions().find(x => x.id === b.dataset.vgo); if (!v) return;
+    let p; try { p = JSON.parse(v.plan); } catch { } if (!validPlan(p)) { toast("That version couldn't be read."); return; }
+    saveVersion("Before going back to " + (v.name || fmtT(v.t)), false);
+    const before = JSON.stringify(S.plan); S.plan = migrate(p); S.sel = null; S.selItem = null; fixFloor();
+    commit(before); loadLocalPhotos(); m.close(); toast(`Back to ${v.name || "the version from " + fmtT(v.t)}. Undo, or the "Before going back" version, returns to where you were.`, 6000);
+  });
+  m.el.querySelectorAll("[data-vdel]").forEach(b => b.onclick = () => { try { localStorage.setItem(VKEY, JSON.stringify(versions().filter(x => x.id !== b.dataset.vdel))); } catch { } b.closest("[data-v]").remove(); });
+}
 function scheduleSave() {
   lsSet(LS_KEY, JSON.stringify(S.plan));
+  if (!S.plan.example) autoVersion();
   if (window.dbxChanged) window.dbxChanged();
   clearTimeout(store.timer);
   if (store.db && S.canWrite) { setSync("busy", "Saving…"); store.timer = setTimeout(flushSave, 700); }
@@ -3104,6 +3135,7 @@ function openSettings() {
       <label class="field">Outside wall thickness<input class="num" id="sExt" value="${esc(fmtIn(extT()))}" ${ro ? "disabled" : ""}></label>
     </div>
     <p class="note" style="margin:4px 0 0">Outside walls grow outwards, so rooms keep their inside sizes. A timber-framed NZ house with weatherboards is about 15 to 20 cm; brick veneer is about 25 to 30 cm.</p>
+    <div class="sec"><div class="row"><h2 class="grow" style="margin:0">Saved versions</h2><button class="btn small" id="sVersions">Open saved versions</button></div><p class="note" style="margin:4px 0 0">Copies of the plan you can go back to.</p></div>
     <div class="sec"><h2>Floors</h2>
       ${S.plan.floors.map((f, i) => `<div class="grid3" data-fl="${f.id}">
         <label class="field">Name<input data-ff="name" value="${esc(f.name)}" ${ro ? "disabled" : ""}></label>
@@ -3144,6 +3176,7 @@ function openSettings() {
     else { const v = parseLen(inp.value); if (v != null && v >= (k === "slab" ? 0 : 1.5) && v < 8) edit(() => f[k] = v); else toast("That height wasn't understood."); }
   }));
   el.querySelector("#addFloor").onclick = () => { edit(() => S.plan.floors.push({ id: "f" + uid(), name: `Floor ${S.plan.floors.length + 1}`, height: 2.4, slab: 0.25 })); m.close(); openSettings(); };
+  el.querySelector("#sVersions").onclick = () => { m.close(); openVersions(); };
   el.querySelector("#rmFloor").onclick = () => { edit(() => S.plan.floors.pop()); m.close(); openSettings(); };
   el.querySelector("#resetBtn").onclick = () => {
     const w = el.querySelector("#resetWrap");
