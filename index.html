@@ -395,6 +395,11 @@ svg.facmove{cursor:move}
       <div class="row"><span>See-through</span><input type="range" id="siteOp" min="0.15" max="1" step="0.05"></div>
       <div class="row"><span class="grow"></span><button class="btn primary" id="siteDone">Done</button></div>
     </div>
+    <div class="sitebar" id="traceBar" hidden>
+      <b>Trace the house outline</b>
+      <span class="note" style="margin:0" id="traceNote"></span>
+      <div class="row"><button class="btn small" id="traceUndo">Undo corner</button><button class="btn small" id="traceClear">Start again</button><span class="grow"></span><button class="btn small" id="traceFit">Fit rooms inside</button><button class="btn primary small" id="traceDone">Done</button></div>
+    </div>
     <div class="sitebar facebar" id="sideBar" hidden>
       <div class="seg" role="group" aria-label="Side of the house" id="sideTabs"><button data-side="S">Front</button><button data-side="N">Back</button><button data-side="W">Left</button><button data-side="E">Right</button></div>
       <span class="note" style="margin:0" id="sideNote"></span>
@@ -425,7 +430,7 @@ svg.facmove{cursor:move}
       <label><input type="checkbox" data-ly="furn"> Furniture</label>
       <label><input type="checkbox" data-ly="garden"> Garden and outdoor</label>
       <label><input type="checkbox" data-ly="photos"> Photos</label>
-      <label><input type="checkbox" data-ly="site"> Site photos</label>
+      <label><input type="checkbox" data-ly="site"> Site photos and house outline</label>
       <label data-only="3d"><input type="checkbox" data-ly="facades"> House-side photos</label>
       <span class="note" data-only="2d">Photos appear as camera dots on the walls. Tap one to see it.</span>
       <span class="note" data-only="3d">Photos are shown on the walls they were tagged to.</span>
@@ -983,7 +988,7 @@ function renderPlan() {
     return `<g transform="translate(${st.x} ${st.y}) rotate(${st.rot})" pointer-events="none">${clip}<image href="${esc(photoURL(st))}" x="${-W / 2}" y="${-H / 2}" width="${W}" height="${H}" opacity="${st.opacity}" preserveAspectRatio="none"${c ? ` clip-path="url(#sc-${st.id})"` : ""}/></g>`;
   }).join("");
   svg.classList.toggle("aligning", !!S.siteAlign);
-  const marks = (S.siteStraight || []).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="${6 / k}" fill="#ff3b30" stroke="#fff" stroke-width="${2 / k}" pointer-events="none"/>`).join("");
+  const marks = outlineMarkup(k) + (S.siteStraight || []).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="${6 / k}" fill="#ff3b30" stroke="#fff" stroke-width="${2 / k}" pointer-events="none"/>`).join("");
   svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${under ? `${under}<g class="gridover" pointer-events="none">${grid}</g>` : grid}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims, keyWalls: S.tab === "totals" && !S.siteAlign ? keyWalls(S.floor) : null })}${marks}</g>`;
 }
 function fit(fid) {
@@ -1030,6 +1035,7 @@ svg.addEventListener("pointerdown", e => {
     }
     straightNote(); renderPlan(); return;
   }
+  if (S.trace) { drag = { type: "pan", trace: true, sc: [e.clientX, e.clientY], tx: S.tx, ty: S.ty, moved: false }; return; }
   if (alignSite()) { const st = alignSite(); drag = { type: "site", sc: [e.clientX, e.clientY], p0: toM(e.clientX, e.clientY), start: [st.x, st.y], before: JSON.stringify(S.plan), moved: false }; return; }
   const vtxEl = e.target.closest("[data-vtx]");
   if (vtxEl && S.canWrite && selRoom()) { const r = selRoom(); drag = { type: "vtx", i: +vtxEl.dataset.vtx, id: r.id, start: clone(r.pts), p0: toM(e.clientX, e.clientY), sc: [e.clientX, e.clientY], before: JSON.stringify(S.plan), moved: false }; return; }
@@ -1125,6 +1131,7 @@ function endPointer(e) {
   if (pinch) { if (pointers.size < 2) pinch = null; drag = null; return; }
   if (!drag) return;
   const d = drag; drag = null;
+  if (d.type === "pan" && !d.moved && d.trace) { traceTap(toM(e.clientX, e.clientY)); return; }
   if (d.type === "pan" && !d.moved) { if (S.sel) { S.sel = null; if (S.tab === "room") S.tab = "rooms"; renderAll(); } return; }
   if (d.type === "item") { if (d.moved) commit(d.before); else renderPane(); return; }
   if (d.type === "site" || d.type === "fac" || d.type === "sroom") { if (d.moved) commit(d.before); return; }
@@ -1557,14 +1564,14 @@ function renderTop() {
   $("#floorTabs").innerHTML = S.plan.floors.map(f => `<button data-floor="${f.id}" aria-pressed="${f.id === S.floor}">${esc(f.name)}</button>`).join("");
   $("#exampleBanner").hidden = !S.plan.example || !S.canWrite;
   $("#undoBtn").disabled = !S.undo.length;
-  $("#addBar").hidden = S.view !== "2d" || !S.canWrite; $("#zoomBar").hidden = S.view === "3d"; $("#sideBar").hidden = S.view !== "side"; if (S.view === "side") renderSideBar(); $("#hint").hidden = S.view !== "2d";
+  $("#addBar").hidden = S.view !== "2d" || !S.canWrite || !!S.trace || !!S.siteAlign; $("#zoomBar").hidden = S.view === "3d"; $("#sideBar").hidden = S.view !== "side"; if (S.view === "side") renderSideBar(); $("#hint").hidden = S.view !== "2d" || !!S.trace;
   $("#bar3d").hidden = S.view !== "3d";
   document.querySelectorAll("#layersPop [data-only]").forEach(el => el.hidden = el.dataset.only !== S.view);
   document.querySelectorAll("#layersPop [data-ly]").forEach(el => el.checked = !!S.layers[el.dataset.ly]);
   $("#emptyFloor").hidden = S.view !== "2d" || !S.canWrite || roomsOn(S.floor).length > 0;
   $("#v2d").setAttribute("aria-pressed", S.view === "2d"); $("#v3d").setAttribute("aria-pressed", S.view === "3d"); $("#vside").setAttribute("aria-pressed", S.view === "side");
 }
-$("#floorTabs").addEventListener("click", e => { const b = e.target.closest("[data-floor]"); if (!b) return; S.floor = b.dataset.floor; const r = selRoom(); if (r && r.floor !== S.floor) S.sel = null; renderAll(); });
+$("#floorTabs").addEventListener("click", e => { const b = e.target.closest("[data-floor]"); if (!b) return; if (S.trace) endTrace(); S.floor = b.dataset.floor; const r = selRoom(); if (r && r.floor !== S.floor) S.sel = null; renderAll(); });
 function renderAll() { fixFloor(); renderTop(); renderPlan(); renderPane(); if (S.view === "3d") schedule3D(); }
 
 /* ---------- 3D ---------- */
@@ -1738,6 +1745,7 @@ function setView(v) {
   const was = S.view; if (was === v) return;
   if (was === "2d") S.planView = { k: S.k, tx: S.tx, ty: S.ty }; else if (was === "side") S.sideView = { k: S.k, tx: S.tx, ty: S.ty };
   if (S.siteAlign && v !== "2d") endSiteAlign();
+  if (S.trace && v !== "2d") endTrace();
   S.view = v; $("#plan").hidden = v === "3d"; $("#three").hidden = v !== "3d";
   if (v === "2d" && S.planView) Object.assign(S, S.planView);
   if (v === "side") { if (S.sideView) Object.assign(S, S.sideView); else fitSide(); }
@@ -2439,6 +2447,7 @@ async function openSite() {
         <label class="row" style="gap:8px;font-size:13px">See-through<input type="range" data-sop min="0.1" max="1" step="0.05" value="${st.opacity}" style="flex:1"></label>
         <div class="row"><button class="btn small primary" data-salign>Line it up</button><button class="btn small" data-sscale>Set the scale</button><button class="btn small" data-scrop>Crop</button><button class="btn small danger" data-sdel>Remove</button></div></div>`).join("")}</div>` : ""}
     <div class="drop"><span>${list.length ? "Add another, such as the map with boundary lines." : "Take a screenshot with the map's scale bar showing, or include a wall of the house you've measured."}</span><button class="btn ${list.length ? "" : "primary"}" id="sNew">${list.length ? "Add another screenshot" : "Choose a screenshot"}</button></div>
+    ${list.length ? `<div class="row"><button class="btn" id="sTrace">${outlineOf(S.floor) ? "Change the house outline" : "Trace the house outline"}</button><span class="note" style="margin:0;flex:1;min-width:160px">Tap the corners of the outside of the house on the photo, then fit your rooms inside it.</span></div>` : ""}
     <p class="note" style="margin:0">Site photos show in the 2D plan only. They stay on this device${store.assets ? " with the plan" : ""} and are left out of exports. Turn them all off at once under Show.</p>`);
   const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
   inp.onchange = async () => {
@@ -2453,6 +2462,7 @@ async function openSite() {
     } catch (e) { toast((e && e.message) || "That image couldn't be used."); }
   };
   m.el.querySelector("#sNew").onclick = () => { inp.value = ""; inp.click(); };
+  if (m.el.querySelector("#sTrace")) m.el.querySelector("#sTrace").onclick = () => { m.close(); startTrace(); };
   m.el.querySelectorAll("[data-site]").forEach(box => {
     const id = box.dataset.site, st = () => sites().find(x => x.id === id);
     box.querySelector("[data-sshow]").onchange = e => edit(() => { st().hidden = !e.target.checked; });
@@ -2762,6 +2772,80 @@ function startSiteAlign(id) {
 function endSiteAlign() { S.siteStraight = null; straightNote(); S.siteAlign = null; $("#siteBar").hidden = true; $("#addBar").hidden = false; renderAll(); }
 $("#siteBtn").onclick = openSite;
 $("#siteDone").onclick = endSiteAlign;
+/* ---------- house outline traced on the site photo (outside face of the walls), one per floor ---------- */
+const outlineOf = fid => { const o = S.plan.outlines && S.plan.outlines[fid]; return Array.isArray(o) && o.length >= 3 ? o : null; };
+function outlineMarkup(k) {
+  if (S.view !== "2d" || (!S.trace && S.layers.site === false)) return "";
+  const pts = S.trace ? S.trace.pts : outlineOf(S.floor); if (!pts || !pts.length) return "";
+  const closed = !S.trace || S.trace.closed, fs = 11 / k, out = [];
+  out.push(`<${closed ? "polygon" : "polyline"} points="${pts.join(" ")}" fill="none" stroke="#E8590C" stroke-width="${2.2 / k}" stroke-dasharray="${7 / k} ${4 / k}" pointer-events="none"/>`);
+  const n = pts.length;
+  for (let i = 0; i < (closed ? n : n - 1); i++) {
+    const a = pts[i], b = pts[(i + 1) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (L * k < 40) continue;
+    let g = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI; if (g > 90 || g <= -90) g -= 180;
+    const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    out.push(`<text x="${mx}" y="${my}" font-size="${fs}" text-anchor="middle" dy="${-0.5 * fs}" fill="#B8430A" stroke="var(--paper)" stroke-width="${3 / k}" paint-order="stroke" font-weight="600" transform="rotate(${g} ${mx} ${my})" pointer-events="none">${fmtLen(L)}</text>`);
+  }
+  if (S.trace) pts.forEach((q, i) => out.push(`<circle cx="${q[0]}" cy="${q[1]}" r="${(i === 0 && !closed ? 9 : 6) / k}" fill="${i === 0 ? "#E8590C" : "#fff"}" stroke="#E8590C" stroke-width="${2 / k}" pointer-events="none"/>`));
+  return out.join("");
+}
+function startTrace() {
+  if (S.view !== "2d") $("#v2d").click();
+  if (S.siteAlign) endSiteAlign();
+  S.sel = null; S.layers.site = true;
+  const old = outlineOf(S.floor);
+  S.trace = { pts: old ? clone(old) : [], closed: !!old };
+  $("#traceBar").hidden = false; $("#addBar").hidden = true;
+  traceNote(); renderAll();
+}
+function traceNote() {
+  const t = S.trace; if (!t) return;
+  $("#traceNote").textContent = t.closed ? `Outline done: ${fmtLen(outlineSize(t.pts).w)} × ${fmtLen(outlineSize(t.pts).h)} overall. Fit rooms inside sizes and places this floor's rooms to match it.` : !t.pts.length ? "Zoom in and tap each outside corner of the house on the photo, going round the house. Drag to move around." : t.pts.length < 3 ? "Keep tapping the corners in order." : "Keep going. Tap the first corner (the orange dot) to close the outline.";
+  $("#traceFit").disabled = !t.closed; $("#traceUndo").disabled = !t.pts.length;
+}
+const outlineSize = pts => bbox(pts);
+function traceTap(q) {
+  const t = S.trace; if (!t || t.closed) return;
+  if (t.pts.length >= 3 && Math.hypot(q[0] - t.pts[0][0], q[1] - t.pts[0][1]) * S.k < 22) { t.closed = true; saveOutline(); traceNote(); renderPlan(); return; }
+  const p = t.pts[t.pts.length - 1];
+  if (p) { // keep walls square to the grid when the tap is within a few degrees of it
+    const dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy), a = Math.atan2(dy, dx), sn = Math.round(a / (Math.PI / 4)) * Math.PI / 4;
+    if (Math.abs(a - sn) < 4 * Math.PI / 180) q = [p[0] + Math.cos(sn) * L, p[1] + Math.sin(sn) * L];
+  }
+  t.pts.push([r2(q[0]), r2(q[1])]); traceNote(); renderPlan();
+}
+function saveOutline() {
+  const t = S.trace; if (!t) return;
+  edit(() => { S.plan.outlines ||= {}; if (t.closed && t.pts.length >= 3) { const pts = shoelace(t.pts) < 0 ? t.pts.slice().reverse() : t.pts.slice(); S.plan.outlines[S.floor] = clone(pts); } else delete S.plan.outlines[S.floor]; });
+}
+function endTrace() { if (S.trace && !S.trace.closed && S.trace.pts.length >= 3) { S.trace.closed = true; saveOutline(); } S.trace = null; $("#traceBar").hidden = true; $("#addBar").hidden = false; renderAll(); }
+$("#traceDone").onclick = endTrace;
+$("#traceUndo").onclick = () => { const t = S.trace; if (!t || !t.pts.length) return; if (t.closed) { t.closed = false; saveOutline(); } else t.pts.pop(); traceNote(); renderPlan(); };
+$("#traceClear").onclick = () => { const t = S.trace; if (!t) return; const had = t.closed; t.pts = []; t.closed = false; if (had) saveOutline(); traceNote(); renderPlan(); };
+$("#traceFit").onclick = () => fitRoomsToOutline(S.floor);
+/* stretch and move this floor's rooms so the outside of their walls fills the outline's overall length and width */
+function fitRoomsToOutline(fid) {
+  const ol = outlineOf(fid), rs = roomsOn(fid).filter(r => !isOut(r)); if (!ol || !rs.length) { toast(rs.length ? "Trace the outline first." : "Add rooms on this floor first."); return; }
+  const g = extT() - S.plan.wallT / 2, B = bbox(rs.flatMap(r => r.pts)), O = bbox(ol);
+  const locked = rs.some(r => Object.values(r.measured || {}).some(Boolean));
+  let sx = (O.w - 2 * g) / B.w, sy = (O.h - 2 * g) / B.h;
+  if (locked || !(sx > 0.4 && sx < 2.5 && sy > 0.4 && sy < 2.5)) sx = sy = 1;
+  const before = JSON.stringify(S.plan);
+  const X = x => r2(O.x0 + g + (x - B.x0) * sx), Y = y => r2(O.y0 + g + (y - B.y0) * sy);
+  const fx = sx === 1 && sy === 1 ? (x => r2(x + (O.x0 + O.w / 2) - (B.x0 + B.w / 2))) : X, fy = sx === 1 && sy === 1 ? (y => r2(y + (O.y0 + O.h / 2) - (B.y0 + B.h / 2))) : Y;
+  const moveOnly = sx === 1 && sy === 1;
+  for (const r of S.plan.rooms.filter(r => r.floor === fid && (moveOnly || !isOut(r)))) { // gardens move along when the house only moves, and keep their size
+    const old = edges(r);
+    r.pts = r.pts.map(([x, y]) => [fx(x), fy(y)]);
+    const ne = edges(r);
+    r.openings.forEach(o => { const f = ne[o.edge] && old[o.edge] ? ne[o.edge].len / old[o.edge].len : 1; if (o.type !== "open") o.offset = r2(o.offset * f); clampOpening(r, o); });
+    (r.items || []).forEach(it => { const f = ne[it.wall] && old[it.wall] ? ne[it.wall].len / old[it.wall].len : 1; it.along = r2(it.along * f); clampItem(r, it); });
+  }
+  commit(before);
+  const msg = sx === 1 && sy === 1 ? (locked ? `Some walls are tape-measured, so the rooms were only moved into the outline, not resized. The house is ${fmtLen(B.w + 2 * g)} × ${fmtLen(B.h + 2 * g)}; the outline is ${fmtLen(O.w)} × ${fmtLen(O.h)}.` : "The rooms are too far from the outline's size to stretch, so they were only moved into it.")
+    : `Rooms stretched ${((sx - 1) * 100).toFixed(1)}% across and ${((sy - 1) * 100).toFixed(1)}% down to fill the outline. Undo puts them back.`;
+  toast(msg, 7000);
+}
 function straightNote() { const n = S.siteStraight; $("#siteStraightNote").textContent = !n ? "" : n.length ? "Now tap the other end of that wall." : "Tap one end of a long, straight house wall on the photo."; $("#siteStraight").textContent = n ? "Cancel" : "Straighten to the grid"; }
 $("#siteStraight").onclick = () => { S.siteStraight = S.siteStraight ? null : []; straightNote(); renderPlan(); };
 document.querySelectorAll("[data-srot]").forEach(b => b.onclick = () => { const st = alignSite(); if (!st) return; const before = JSON.stringify(S.plan); st.rot = Math.round((((st.rot + +b.dataset.srot) % 360 + 360) % 360) * 100) / 100; commit(before); renderPlan(); });
