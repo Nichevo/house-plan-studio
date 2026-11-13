@@ -171,7 +171,7 @@ h3{font:600 16px/1.25 var(--f-label);margin:0;text-wrap:balance}
 .stats span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-family:var(--f-label)}
 .stats b{font:500 15px var(--f-num)}
 .walls{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.wallrow{display:grid;grid-template-columns:minmax(0,1fr) 110px 22px;gap:8px;align-items:center;padding:6px 8px;border-top:1px solid var(--line)}
+.wallrow{display:grid;grid-template-columns:minmax(0,1fr) 110px auto;gap:8px;align-items:center;padding:6px 8px;border-top:1px solid var(--line)}
 .wallrow:first-child{border-top:0}
 .wallrow .nm{font-size:13px;display:flex;flex-direction:column;min-width:0}
 .wallrow .nm small{color:var(--muted);font-size:11px}
@@ -197,6 +197,8 @@ h3{font:600 16px/1.25 var(--f-label);margin:0;text-wrap:balance}
 .ph select{border:0;border-top:1px solid var(--line);background:var(--panel);font-size:12px;padding:4px}
 .ph .acts{display:flex;border-top:1px solid var(--line)}
 .ph{position:relative}
+.mtog{border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:999px;font:600 11px var(--f-label);padding:3px 8px;white-space:nowrap;cursor:pointer}
+.mtog.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .phsel{position:absolute;top:4px;left:4px;background:var(--panel);border-radius:6px;padding:3px 4px;display:flex;line-height:0;box-shadow:0 1px 4px rgba(0,0,0,.25)}
 .phsel input{width:22px;height:22px;margin:0}
 .phsel{padding:5px 6px}
@@ -1002,6 +1004,8 @@ function planMarkup(fid, o) {
     if (S.canWrite) { const es = edges(sr); for (const op of sr.openings) { if (op.type === "open") continue; const e = es[op.edge]; if (!e) continue; const A = [e.a[0] + e.d[0] * op.offset, e.a[1] + e.d[1] * op.offset], B = [e.a[0] + e.d[0] * (op.offset + op.width), e.a[1] + e.d[1] * (op.offset + op.width)]; out.push(`<line class="opn-hit" data-opn="${op.id}" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke-width="${24 / k}"/>`); } }
     if (S.vtxAngle) { const c = centroid(sr.pts); S.vtxAngle.forEach((a, i) => { const q = sr.pts[i], d = Math.hypot(c[0] - q[0], c[1] - q[1]) || 1, x = q[0] + (c[0] - q[0]) / d * 0.45, y = q[1] + (c[1] - q[1]) / d * 0.45; out.push(`<text x="${x}" y="${y}" font-size="${12 / k}" font-weight="700" text-anchor="middle" dominant-baseline="middle" fill="var(--sel)" pointer-events="none">${a}°</text>`); }); }
     if (S.canWrite) sr.pts.forEach((q, i) => out.push(`<circle class="vtx-hit" data-vtx="${i}" cx="${q[0]}" cy="${q[1]}" r="${15 / k}"/><rect class="vtx" x="${q[0] - 5 / k}" y="${q[1] - 5 / k}" width="${10 / k}" height="${10 / k}" stroke-width="${1.5 / k}"/>`));
+    // corner numbers, used by Cut a corner and the angles list
+    if (S.canWrite && !S.vtxAngle && o.interactive) { const c = centroid(sr.pts); sr.pts.forEach((q, i) => { const d = Math.hypot(c[0] - q[0], c[1] - q[1]) || 1, x = q[0] + (c[0] - q[0]) / d * 0.32, y = q[1] + (c[1] - q[1]) / d * 0.32, hi = S.hiCorner && S.hiCorner.room === sr.id && S.hiCorner.v === i; out.push(`${hi ? `<circle cx="${q[0]}" cy="${q[1]}" r="${14 / k}" fill="none" stroke="#E8590C" stroke-width="${3 / k}" pointer-events="none"/>` : ""}<text x="${x}" y="${y}" font-size="${10 / k}" font-weight="700" text-anchor="middle" dominant-baseline="middle" fill="${hi ? "#E8590C" : "var(--muted)"}" pointer-events="none">${i + 1}</text>`); }); }
   }
   if (o.keyWalls) o.keyWalls.forEach((c, i) => {
     const e = edges(c.room)[c.wall], mx = (e.a[0] + e.b[0]) / 2 + e.n[0] * 0.35, my = (e.a[1] + e.b[1]) / 2 + e.n[1] * 0.35, rr = 9 / k;
@@ -1079,7 +1083,7 @@ svg.addEventListener("pointerdown", e => {
   const vtxEl = e.target.closest("[data-vtx]");
   if (vtxEl && S.canWrite && selRoom()) { const r = selRoom(); drag = { type: "vtx", i: +vtxEl.dataset.vtx, id: r.id, start: clone(r.pts), p0: toM(e.clientX, e.clientY), sc: [e.clientX, e.clientY], before: JSON.stringify(S.plan), moved: false }; return; }
   const opnEl = e.target.closest("[data-opn]");
-  if (opnEl && S.canWrite && selRoom()) { const r = selRoom(), op = r.openings.find(x => x.id === opnEl.dataset.opn); if (op) { drag = { type: "opn", id: r.id, oid: op.id, start: op.offset, p0: toM(e.clientX, e.clientY), sc: [e.clientX, e.clientY], before: JSON.stringify(S.plan), moved: false }; return; } }
+  if (opnEl && S.canWrite && selRoom()) { const r = selRoom(), op = r.openings.find(x => x.id === opnEl.dataset.opn); if (op && op.locked) { toast("This door or window is locked. Untick Lock on the Room tab to move it."); drag = { type: "none", sc: [e.clientX, e.clientY], moved: false }; return; } if (op) { drag = { type: "opn", id: r.id, oid: op.id, start: op.offset, p0: toM(e.clientX, e.clientY), sc: [e.clientX, e.clientY], before: JSON.stringify(S.plan), moved: false }; return; } }
   const edgeEl = e.target.closest("[data-edge]"), roomEl = e.target.closest("[data-room]"), camEl = e.target.closest("[data-photo]"), itemEl = e.target.closest("[data-item]");
   const p0 = toM(e.clientX, e.clientY), sc = [e.clientX, e.clientY];
   if (camEl) { const [rid, pid] = camEl.dataset.photo.split(":"); drag = null; pointers.delete(e.pointerId); openPhotoViewer(rid, pid); return; }
@@ -1087,7 +1091,8 @@ svg.addEventListener("pointerdown", e => {
     const [rid, iid] = itemEl.dataset.item.split(":"), r = S.plan.rooms.find(x => x.id === rid), it = r && r.items.find(x => x.id === iid);
     if (it) {
       if (S.sel !== rid || S.selItem !== iid) { S.sel = rid; S.selItem = iid; S.tab = "room"; renderAll(); }
-      drag = { type: S.canWrite ? "item" : "none", id: rid, iid, start: { along: it.along, out: it.out }, p0, sc, before: JSON.stringify(S.plan), moved: false };
+      if (it.locked && S.canWrite) toast("This item is locked. Untick Lock on the Room tab to move it.");
+      drag = { type: S.canWrite && !it.locked ? "item" : "none", id: rid, iid, start: { along: it.along, out: it.out }, p0, sc, before: JSON.stringify(S.plan), moved: false };
       return;
     }
   }
@@ -1302,13 +1307,13 @@ function renderRoom() {
     <div class="walls">
       ${es.map((e, i) => `<div class="wallrow"><span class="nm">${names[i]}<small>${photosOn(i)} photo${photosOn(i) === 1 ? "" : "s"} · ${r.measured[i] ? "measured" : "guess"}</small></span>
         <input class="inp num" data-wlen="${i}" value="${esc(fmtIn(e.len))}" aria-label="${names[i]} length" ${ro ? "disabled" : ""}>
-        <span class="dot ${r.measured[i] ? "on" : ""}" title="${r.measured[i] ? "Measured" : "Not measured yet"}"></span></div>`).join("")}
+        <button class="mtog ${r.measured[i] ? "on" : ""}" data-wmeas="${i}" ${ro ? "disabled" : ""} title="${r.measured[i] ? "Tape-measured. Tap to mark it as a guess" : "A guess. Tap to mark this length as tape-measured"}">${r.measured[i] ? "✓ Real" : "Guess"}</button></div>`).join("")}
     </div>
     <div class="grid2" ${out ? "hidden" : ""}>
       <label class="field">Ceiling height<input class="num" id="rH" value="${esc(fmtIn(roomH(r)))}" ${ro ? "disabled" : ""}></label>
       <div class="field">&nbsp;<span class="note">${r.height ? "Set for this room" : "Uses the floor's height"}</span></div>
     </div>
-    <p class="note">Type a length to mark that ${W} as measured, for example ${S.plan.units === "ft" ? `12' 6" or 150in` : "3.45 or 345cm"}. Changing a wall slides the wall after it, so corners stay square.</p>
+    <p class="note">Typing a length marks that ${W} as tape-measured (✓ Real). Tap Guess or ✓ Real to switch it. Real lengths are kept when you resize, fit or close gaps, and Claude is told to keep them exactly. Type a length for example ${S.plan.units === "ft" ? `12' 6" or 150in` : "3.45 or 345cm"}. Changing a wall slides the wall after it, so corners stay square.</p>
   </div>
   <div class="sec">
     <div class="row"><h2 class="grow" style="margin:0">${out ? "Things in the garden" : "Appliances and furniture"} · ${r.items.length}</h2>
@@ -1317,6 +1322,7 @@ function renderRoom() {
     ${r.items.map(it => `<div class="op" data-it="${it.id}" ${S.selItem === it.id ? 'style="border-color:var(--accent)"' : ""}>
       <div class="row"><input class="inp grow" data-if="label" value="${esc(it.label)}" aria-label="Name" ${ro ? "disabled" : ""}>
         <label class="note" style="display:flex;gap:4px;align-items:center"><input type="checkbox" data-if="on" ${it.on !== false ? "checked" : ""} ${ro ? "disabled" : ""}> Show</label>
+        <label class="note" style="display:flex;gap:4px;align-items:center" title="Locked items can't be dragged, and Claude leaves them where they are"><input type="checkbox" data-if="locked" ${it.locked ? "checked" : ""} ${ro ? "disabled" : ""}> Lock</label>
         ${ro ? "" : `<button class="btn small" data-itturn="${it.id}" title="Swap width and depth">Turn</button><button class="btn small danger" data-itdel="${it.id}">Remove</button>`}</div>
       <div class="grid3">
         <label class="field">Against<select data-if="wall" ${ro ? "disabled" : ""}>${names.map((n, i) => `<option value="${i}" ${it.wall === i ? "selected" : ""}>${n}</option>`).join("")}</select></label>
@@ -1334,6 +1340,7 @@ function renderRoom() {
       ${ro ? "" : `<button class="btn small" id="addDoor">+ Door</button><button class="btn small" id="addWin">+ Window</button><button class="btn small" id="addOpen">+ Open side</button>`}</div>
     ${r.openings.length ? r.openings.map(o => `<div class="op" data-op="${o.id}">
       <div class="row"><b class="grow">${o.type === "door" ? "Door" : o.type === "open" ? `Open side${o.leadsTo ? ` into ${esc(o.leadsTo)}` : ""}` : "Window"}</b>
+        <label class="note" style="display:flex;gap:4px;align-items:center;margin:0" title="Locked doors and windows can't be dragged, and Claude keeps them"><input type="checkbox" data-of="locked" ${o.locked ? "checked" : ""} ${ro ? "disabled" : ""}> Lock</label>
         <select class="inp" data-of="edge" style="width:auto" ${ro ? "disabled" : ""}>${names.map((n, i) => `<option value="${i}" ${o.edge === i ? "selected" : ""}>${n}</option>`).join("")}</select>
         ${ro ? "" : `<button class="btn small danger" data-opdel="${o.id}">Remove</button>`}</div>
       ${o.type === "open" ? `<p class="note" style="margin:0">No wall on this side. It opens straight into the next area.</p>` : `<div class="grid3">
@@ -1358,7 +1365,8 @@ function renderRoom() {
     ${store.assets ? "" : `<p class="note">Photos are kept in this browser on this device.</p>`}
   </div>
   ${ro ? "" : `<div class="sec"><div class="row"><button class="btn" id="rotRoom">Rotate 90°</button><button class="btn" id="flipRoom">Flip</button><button class="btn" id="dupRoom">Duplicate room</button><span class="confirm" id="delWrap"><button class="btn danger" id="delRoom">Delete room</button></span></div></div>
-  <div class="sec"><h4 style="margin:0 0 6px">Corners and angled walls</h4><p class="note" style="margin:0 0 6px">Drag a square corner handle on the plan to angle a wall. It snaps to 45° and 90° and to other rooms' corners. To bend a straight wall, add a corner to it first.</p>
+  <div class="sec"><h4 style="margin:0 0 6px">Shape: angles, cut corners and cut-outs</h4><p class="note" style="margin:0 0 6px">Drag a square corner handle on the plan to angle a wall. It snaps to 45° and 90° and to other rooms' corners. For a triangle, remove a corner. For exact angles, type them in.</p>
+    <div class="row"><button class="btn small primary" id="shpNums">Type lengths and angles</button><button class="btn small" id="shpCut">Cut a corner</button><button class="btn small" id="shpNotch">Cut out a notch</button></div>
     <div class="row"><select class="inp" id="cnWall" style="flex:1;min-width:120px">${wallNames(r).map((nm, i) => `<option value="${i}">${esc(nm)}</option>`).join("")}</select><button class="btn small" id="cnAdd">Add a corner</button></div>
     <div class="row"><select class="inp" id="cnPt" style="flex:1;min-width:120px">${cornerAngles(r.pts).map((a, i) => `<option value="${i}">Corner ${i + 1} (${a}°)</option>`).join("")}</select><button class="btn small" id="cnDel" ${r.pts.length <= 3 ? "disabled" : ""}>Remove corner</button></div></div>
   <div class="sec"><h4 style="margin:0 0 6px">Resize to fit</h4><p class="note" style="margin:0 0 6px">Shrink or grow the whole room evenly, keeping its shape, to fit the house outline. Measured walls stay locked, so set those lengths instead.</p>
@@ -1383,6 +1391,7 @@ function bindRoom(r) {
         const rr = R(), it = rr.items.find(x => x.id === iid); if (!it) return;
         if (f === "label") it.label = el.value.trim().slice(0, 40) || it.label;
         else if (f === "on") it.on = el.checked;
+        else if (f === "locked") { if (el.checked) it.locked = true; else delete it.locked; }
         else if (f === "wall") it.wall = +el.value;
         else if (f === "rot") { const v = parseFloat(el.value); if (isFinite(v)) it.rot = ((v % 360) + 540) % 360 - 180; else toast("Type an angle in degrees, such as 45."); }
         else { const v = parseLen(el.value); if (v != null && v >= 0 && v < 30) it[f] = v; else toast("That length wasn't understood."); }
@@ -1397,6 +1406,7 @@ function bindRoom(r) {
     if (v == null || v < 0.2 || v > 60) { toast("Enter a length such as " + (S.plan.units === "ft" ? `12' 6"` : "3.45")); renderPane(); return; }
     edit(() => { if (apply(v) === false) toast("That length would make the room fold over itself."); });
   });
+  pane.querySelectorAll("[data-wmeas]").forEach(b => b.onclick = () => edit(() => { const rr = R(), i = +b.dataset.wmeas; if (rr.measured[i]) delete rr.measured[i]; else rr.measured[i] = true; }));
   pane.querySelectorAll("[data-wlen]").forEach(el => lenInput(el, v => { const i = +el.dataset.wlen, rr = R(); const ok = setEdgeLength(rr, i, v); if (ok) rr.measured[i] = true; rr.openings.forEach(o => clampOpening(rr, o)); return ok; }));
   const wd = (sel, i) => { const el = pane.querySelector(sel); if (el) lenInput(el, v => { const rr = R(); const ok = setEdgeLength(rr, i, v); if (ok) { rr.measured[i] = true; rr.measured[i + 2] = true; } rr.openings.forEach(o => clampOpening(rr, o)); return ok; }); };
   wd("#rW", 0); wd("#rD", 1);
@@ -1410,7 +1420,8 @@ function bindRoom(r) {
       const f = el.dataset.of;
       edit(() => {
         const rr = R(), o = rr.openings.find(x => x.id === oid); if (!o) return;
-        if (f === "edge") o.edge = +el.value; else if (f === "hinge" || f === "swing") o[f] = el.value;
+        if (f === "locked") { if (el.checked) o.locked = true; else delete o.locked; }
+        else if (f === "edge") o.edge = +el.value; else if (f === "hinge" || f === "swing") o[f] = el.value;
         else { const v = parseLen(el.value); if (v != null && v >= 0 && v < 20) o[f] = v; else toast("That length wasn't understood."); }
         clampOpening(rr, o);
       });
@@ -1467,6 +1478,9 @@ function bindRoom(r) {
   on("#rebuildBtn", "click", () => needKey(() => openRebuild(id)));
   on("#rotRoom", "click", () => edit(() => rotateRoom(R())));
   on("#flipRoom", "click", () => edit(() => flipRoom(R())));
+  on("#shpNums", "click", () => openShapeNumbers(id));
+  on("#shpCut", "click", () => openCutCorner(id, false));
+  on("#shpNotch", "click", () => openCutCorner(id, true));
   on("#cnAdd", "click", () => { const i = +pane.querySelector("#cnWall").value; edit(() => splitWall(R(), i)); toast("Corner added in the middle of the wall. Drag its handle on the plan."); });
   on("#cnDel", "click", () => { const v = +pane.querySelector("#cnPt").value; const before = JSON.stringify(S.plan); if (removeCorner(R(), v)) commit(before); else toast("Removing that corner would make the walls cross."); });
   pane.querySelectorAll("[data-rsz]").forEach(b => b.onclick = () => {
@@ -1991,13 +2005,15 @@ async function estimateRoom(roomId, mode = {}) {
     if (!blobs.length) { status.textContent = "The photos couldn't be loaded on this device."; return; }
     const u = S.plan.units === "ft" ? "Answer in metres even though the user works in feet." : "";
     const prompt = `You are helping someone draw an accurate floor plan of their house from phone photos.
-${isOut(room) ? "Outdoor area (garden, patio or similar)" : "Room"}: "${room.name}" on the ${floorOf(room).name}. Seen from above with north at the top, its outline is a right-angled polygon. Walls in clockwise order:
-${es.map((e, i) => `- wall ${i}: ${names[i]}, currently ${e.len.toFixed(2)} m (${room.measured[i] ? "MEASURED with a tape, treat as correct" : "rough guess"})`).join("\n")}
+${isOut(room) ? "Outdoor area (garden, patio or similar)" : "Room"}: "${room.name}" on the ${floorOf(room).name}. Seen from above with north at the top, walls in clockwise order:
+${outlineBrief(room)}
+Do not suggest a new length for a TAPE-MEASURED wall.
 Ceiling height: currently ${roomH(room).toFixed(2)} m (${room.height ? "set by the user" : "default guess"}).
 ${(() => { const nbs = neighbourWalls(room); return nbs.length ? `The user has arranged the rooms on the plan by hand, so treat how they fit together as reliable. Neighbouring rooms against this one:
 ${nbs.map(n => `- wall ${n.wall} (${names[n.wall]}) ${n.gap > S.plan.wallT * 1.6 ? `faces ${n.room.name}'s wall ${n.gap.toFixed(2)} m away` : `backs onto ${n.room.name}`}${n.open ? " as an open side with no wall between them" : ""}; that wall of ${n.room.name} is ${n.lenB.toFixed(2)} m (${n.measuredB ? "MEASURED" : "a guess"}) and ${n.shared.toFixed(2)} m of it lines up with this wall.`).join("\n")}
 Where a wall is shared with a neighbour along its whole length, its length should normally match the neighbour's wall: use the neighbour's length when that is measured, otherwise reconcile the two from the photos, and say which you used in "basis".` : ""; })()}
-Existing doors and windows: ${room.openings.length ? room.openings.map(o => `${o.type} on wall ${o.edge}, ${o.offset.toFixed(2)} m from the wall's start, ${o.width.toFixed(2)} m wide`).join("; ") : "none recorded"}.
+Existing doors and windows: ${openingsBrief(room) || "none recorded"}. LOCKED ones are confirmed; don't move them.
+Items already placed: ${itemsBrief(room) || "none"}. Do NOT list these again; in items, list only things you can see that are missing.
 Photos, in order: ${ordered.slice(0, blobs.length).map((p, i) => `photo ${i + 1} ${p.wall != null ? `shows wall ${p.wall} (${names[p.wall]})` : "wall not tagged"}`).join("; ")}.
 Use measured lengths first, then common objects of standard size as scale references (interior doors about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high, light switches about 1.2 m from the floor, sockets about 0.3 m, floor tiles and boards of standard sizes). Estimate the length of each wall you can see well, the ceiling height, and the doors and windows you can see. ${u}
 ${ITEM_PROMPT}
@@ -2018,12 +2034,12 @@ function showSuggestions(roomId, res, m, status, out, mode = {}) {
   const walls = (Array.isArray(res && res.walls) ? res.walls : []).filter(w => es[w.wall] && w.length_m > 0.3 && w.length_m < 40);
   const ops = (Array.isArray(res && res.openings) ? res.openings : []).filter(o => es[o.wall] && o.width_m > 0.2 && (o.type === "door" || o.type === "window"));
   const hh = !isOut(room) && res && res.ceiling_height_m > 1.8 && res.ceiling_height_m < 6 ? res.ceiling_height_m : null;
-  const items = parseItems(res && res.items, es.length), io = !!mode.itemsOnly;
+  const items0 = parseItems(res && res.items, es.length); items0.forEach(it => clampItem(room, it)); const items = newItemsOnly(room, items0), io = !!mode.itemsOnly;
   status.textContent = "Here's what Claude estimated. Tick what you want to use.";
   out.innerHTML = `<div class="sec">
     ${walls.map((w, i) => `<label class="sugg"><input type="checkbox" data-sw="${i}" ${room.measured[w.wall] || io ? "" : "checked"}><span><b>${names[w.wall]}: ${fmtLen(w.length_m)}</b> <span class="chip">${esc(w.confidence || "")}</span><br><small class="muted">Now ${fmtLen(es[w.wall].len)}${room.measured[w.wall] ? ", which you measured" : ""}. ${esc(w.basis || "")}</small></span></label>`).join("")}
     ${hh ? `<label class="sugg"><input type="checkbox" id="sh" ${room.height || io ? "" : "checked"}><span><b>Ceiling height: ${fmtLen(hh)}</b><br><small class="muted">Now ${fmtLen(roomH(room))}</small></span></label>` : ""}
-    ${ops.length ? `<label class="sugg"><input type="checkbox" id="so" ${room.openings.length || io ? "" : "checked"}><span><b>${ops.length} door${ops.length > 1 ? "s and windows" : " or window"}</b><br><small class="muted">${ops.map(o => `${o.type} on ${names[o.wall]}, ${fmtLen(o.width_m)} wide`).join("; ")}. Replaces the ${room.openings.length} already on this room.</small></span></label>` : ""}
+    ${ops.length ? `<label class="sugg"><input type="checkbox" id="so" ${room.openings.length || io ? "" : "checked"}><span><b>${ops.length} door${ops.length > 1 ? "s and windows" : " or window"}</b><br><small class="muted">${ops.map(o => `${o.type} on ${names[o.wall]}, ${fmtLen(o.width_m)} wide`).join("; ")}. Replaces the ${room.openings.filter(o => !o.locked).length} already on this room${room.openings.some(o => o.locked) ? "; locked ones stay" : ""}.</small></span></label>` : ""}
     ${items.length ? `<label class="sugg"><input type="checkbox" id="si" checked><span><b>${items.length} appliance${items.length > 1 ? "s and furniture" : " or piece of furniture"}</b><br><small class="muted">${esc(items.map(x => x.label).join(", "))}. Added to the ${room.items.length} already on this room.</small></span></label>` : (io ? `<div class="empty">Claude didn't find any appliances or furniture it could place.</div>` : "")}
     ${!walls.length && !hh && !ops.length && !items.length ? `<div class="empty">Claude couldn't estimate anything reliable from these photos.</div>` : ""}
     ${res && res.notes ? `<p class="note"><b>Tip from Claude:</b> ${esc(res.notes)}</p>` : ""}
@@ -2040,7 +2056,8 @@ function showSuggestions(roomId, res, m, status, out, mode = {}) {
       } else chosen.forEach(w => setEdgeLength(rr, w.wall, w.length_m));
       if (hh && out.querySelector("#sh")?.checked) rr.height = Math.round(hh * 100) / 100;
       if (ops.length && out.querySelector("#so")?.checked) {
-        rr.openings = ops.map(o => o.type === "door" ? door(o.wall, o.offset_m || 0.2, o.width_m, { height: o.height_m || 2.03 }) : win(o.wall, o.offset_m || 0.2, o.width_m, { height: o.height_m || 1.2, sill: o.sill_m ?? 0.9 }));
+        const lk = rr.openings.filter(o => o.locked);
+        rr.openings = [...lk, ...ops.filter(o => !lk.some(k => k.edge === o.wall && (k.type === "open" || ((o.offset_m || 0) < k.offset + k.width && k.offset < (o.offset_m || 0) + o.width_m)))).map(o => o.type === "door" ? door(o.wall, o.offset_m || 0.2, o.width_m, { height: o.height_m || 2.03 }) : win(o.wall, o.offset_m || 0.2, o.width_m, { height: o.height_m || 1.2, sill: o.sill_m ?? 0.9 }))];
       }
       rr.openings.forEach(o => clampOpening(rr, o));
       if (items.length && out.querySelector("#si")?.checked) { items.forEach(it => clampItem(rr, it)); rr.items.push(...items); }
@@ -2062,15 +2079,101 @@ function polyFromWalls(walls) {
   const end = () => lens.reduce((p, l, i) => [p[0] + dirs[i][0] * l, p[1] + dirs[i][1] * l], [0, 0]);
   // close the outline with the smallest relative change to the wall lengths (least squares)
   const [ex, ey] = end(); let a11 = 0, a12 = 0, a22 = 0;
-  lens.forEach((l, i) => { const w = l * l, [dx, dy] = dirs[i]; a11 += w * dx * dx; a12 += w * dx * dy; a22 += w * dy * dy; });
+  const wt = lens.map((l, i) => walls[i].fixed ? l * l * 1e-4 : l * l); // tape-measured walls barely change
+  lens.forEach((l, i) => { const w = wt[i], [dx, dy] = dirs[i]; a11 += w * dx * dx; a12 += w * dx * dy; a22 += w * dy * dy; });
   const det = a11 * a22 - a12 * a12; if (Math.abs(det) < 1e-9) return null;
   const lx = (-ex * a22 + ey * a12) / det, ly = (-ey * a11 + ex * a12) / det;
-  lens.forEach((l, i) => { lens[i] = l + l * l * (dirs[i][0] * lx + dirs[i][1] * ly); });
+  lens.forEach((l, i) => { lens[i] = l + wt[i] * (dirs[i][0] * lx + dirs[i][1] * ly); });
   const [fx, fy] = end();
   if (Math.hypot(fx, fy) > 0.01 || lens.some(l => l < 0.25)) return null;
   const pts = [[0, 0]]; for (let i = 0; i < lens.length - 1; i++) { const [x, y] = pts[pts.length - 1]; pts.push([x + dirs[i][0] * lens[i], y + dirs[i][1] * lens[i]]); }
   const out = pts.map(p => [r2(p[0]), r2(p[1])]);
   return simplePoly(out) ? out : null;
+}
+/* what's already in a room, told to Claude so it doesn't add things twice */
+const itemsBrief = (room, onlyLocked) => (room.items || []).filter(it => !onlyLocked || it.locked).map(it => `${it.label} (${it.type}) against wall ${it.wall}, ${it.along.toFixed(2)} m along it, ${it.w.toFixed(2)} × ${it.d.toFixed(2)} m${it.locked ? ", LOCKED by the user" : ""}`).join("; ");
+const openingsBrief = room => room.openings.map(o => o.type === "open" ? `open side on wall ${o.edge}` : `${o.type} on wall ${o.edge}, ${o.offset.toFixed(2)} m from the wall's start, ${o.width.toFixed(2)} m wide${o.locked ? ", LOCKED by the user (confirmed correct)" : ""}`).join("; ");
+const outlineBrief = room => { const es = edges(room), names = wallNames(room), ang = cornerAngles(room.pts), n = es.length; return es.map((e, i) => `- wall ${i} (${names[i]}): ${e.len.toFixed(2)} m, ${room.measured[i] ? "TAPE-MEASURED by the user: keep exactly" : "a rough guess"}; the inside angle at its end corner is ${ang[(i + 1) % n]}°`).join("\n"); };
+/* drop suggested items that are already there (same kind, centre within 1 m) */
+function newItemsOnly(room, items) { const have = (room.items || []).map(it => ({ t: it.type, c: itemFrame(room, it).c })); return items.filter(n => { const c = itemFrame(room, n).c; return !have.some(h => h.t === n.type && Math.hypot(h.c[0] - c[0], h.c[1] - c[1]) < 1); }); }
+/* put a freshly built outline (starting at 0,0 heading east) where the old one was: same first corner, first wall pointing the same way */
+function alignLike(pts, old) {
+  const e0 = edges(old)[0], a = Math.atan2(e0.d[1], e0.d[0]), c = Math.cos(a), sn = Math.sin(a), o = old.pts[0];
+  return pts.map(([x, y]) => [r2(o[0] + x * c - y * sn), r2(o[1] + x * sn + y * c)]);
+}
+/* move doors, windows and items from one outline to another by where they are, for when the number of walls changed */
+function remapOnto(oldRoom, room) {
+  const es = edges(room), near = P => { let best = null; for (const e of es) { const t = Math.max(0, Math.min(e.len, (P[0] - e.a[0]) * e.d[0] + (P[1] - e.a[1]) * e.d[1])), q = [e.a[0] + e.d[0] * t, e.a[1] + e.d[1] * t], d = Math.hypot(P[0] - q[0], P[1] - q[1]); if (!best || d < best.d) best = { e, t, d }; } return best; };
+  const oe = edges(oldRoom);
+  room.openings = oldRoom.openings.map(o => { const e = oe[o.edge]; if (!e) return null; const mid = o.type === "open" ? e.len / 2 : o.offset + o.width / 2, b = near([e.a[0] + e.d[0] * mid, e.a[1] + e.d[1] * mid]); if (!b) return null; const n = { ...clone(o), edge: b.e.i }; if (o.type !== "open") n.offset = r2(b.t - o.width / 2); clampOpening(room, n); return n; }).filter(Boolean);
+  room.items = (oldRoom.items || []).map(it => { const f = itemFrame(oldRoom, it), b = near(f.c); if (!b) return null; const n = { ...clone(it), wall: b.e.i, along: r2(b.t - it.w / 2) }; clampItem(room, n); return n; }).filter(Boolean);
+}
+/* type each wall's length and the angle at its end corner */
+function openShapeNumbers(roomId) {
+  const room = S.plan.rooms.find(r => r.id === roomId); if (!room) return;
+  const names = wallNames(room), es = edges(room), ang = cornerAngles(room.pts), n = es.length;
+  const m = modal(`${room.name}: lengths and angles`, `
+    <p style="margin:0">Go round the room clockwise. Each row is a wall and the inside angle of the corner at its end: 90° for an ordinary corner, 135° where a corner is cut off at 45°, 270° for an inward corner like in an L-shaped room, 60° for a corner of an equal-sided triangle. Tick Real for tape-measured lengths. The other walls are adjusted so the outline closes.</p>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 84px auto 70px;gap:6px;padding:0 8px" class="note"><span>Wall</span><span>Length</span><span></span><span>Corner after</span></div>
+    <div class="list" style="display:block">${es.map((e, i) => `<div style="display:grid;grid-template-columns:minmax(0,1fr) 84px auto 70px;gap:6px;align-items:center;padding:6px 8px;border-top:1px solid var(--line)"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(names[i])}</span>
+      <input class="inp num" data-sl="${i}" value="${esc(fmtIn(e.len))}" style="width:100%;box-sizing:border-box" aria-label="${esc(names[i])} length">
+      <label class="note" style="display:flex;gap:3px;align-items:center;margin:0"><input type="checkbox" data-sm="${i}" ${room.measured[i] ? "checked" : ""}> Real</label>
+      <input class="inp num" data-sa="${i}" value="${ang[(i + 1) % n]}°" style="width:100%;box-sizing:border-box" inputmode="decimal" aria-label="Angle at corner ${(i + 1) % n + 1}, the end of ${esc(names[i])}"></div>`).join("")}</div>
+    <div class="row"><span class="note grow" id="shStat" style="margin:0"></span><button class="btn primary" id="shGo">Apply</button></div>`);
+  const read = () => es.map((e, i) => { const L = parseLen(m.el.querySelector(`[data-sl="${i}"]`).value), A = parseFloat(m.el.querySelector(`[data-sa="${i}"]`).value); return { length_m: L, turn: 180 - A, fixed: m.el.querySelector(`[data-sm="${i}"]`).checked, ok: L > 0.2 && L < 60 && A > 0 && A < 360 }; });
+  const stat = () => { const w = read(), sum = w.reduce((s, x) => s + (180 - x.turn), 0), want = (n - 2) * 180; m.el.querySelector("#shStat").textContent = w.some(x => !x.ok) ? "Check the numbers." : Math.abs(sum - want) > 0.5 ? `The angles add up to ${Math.round(sum)}°; a ${n}-sided room needs ${want}°. Apply spreads the difference.` : ""; };
+  m.el.querySelectorAll("input").forEach(el => el.addEventListener("input", stat)); stat();
+  m.el.querySelector("#shGo").onclick = () => {
+    const w = read(); if (w.some(x => !x.ok)) { toast("Check the lengths and angles."); return; }
+    const sum = w.reduce((s, x) => s + x.turn, 0); if (Math.abs(sum - 360) > 60) { toast(`Those angles don't make a closed room. Inside angles of a ${n}-sided room add up to ${(n - 2) * 180}°.`, 6000); return; }
+    const pts = polyFromWalls(w); if (!pts) { toast("That shape doesn't close or crosses itself. Check the angles."); return; }
+    const before = JSON.stringify(S.plan), rr = S.plan.rooms.find(r => r.id === roomId);
+    rr.pts = alignLike(pts, rr); rr.measured = {}; w.forEach((x, i) => { if (x.fixed) rr.measured[i] = true; });
+    rr.openings.forEach(o => clampOpening(rr, o)); (rr.items || []).forEach(it => clampItem(rr, it));
+    commit(before); m.close(); toast("Shape updated. Undo puts it back.");
+  };
+}
+/* cut a corner off at an angle, or cut a rectangular notch out of it */
+function openCutCorner(roomId, notch) {
+  const room = S.plan.rooms.find(r => r.id === roomId); if (!room) return;
+  const names = wallNames(room), n = room.pts.length, ang = cornerAngles(room.pts);
+  const m = modal(notch ? `${room.name}: cut out a notch` : `${room.name}: cut a corner`, `
+    <p style="margin:0">${notch ? "Takes a rectangle out of a corner, for a cupboard, chimney or a room that wraps around something. The room becomes L-shaped there." : "Cuts a corner off with a straight wall, like an angled corner or a bay. Equal sizes give a 45° cut."}</p>
+    <div class="grid2"><label class="field">Corner<select id="ccV">${room.pts.map((_, i) => `<option value="${i}">Corner ${i + 1}: ${esc(names[(i + n - 1) % n])} meets ${esc(names[i])} (${ang[i]}°)</option>`).join("")}</select></label><span></span>
+      <label class="field">${notch ? "Width, along the first wall" : "Cut along the first wall"}<input class="num" id="ccA" value="${notch ? "0.6" : "0.8"}"></label>
+      <label class="field">${notch ? "Depth, along the second wall" : "Cut along the second wall"}<input class="num" id="ccB" value="${notch ? "0.6" : "0.8"}"></label></div>
+    <p class="note" style="margin:0">Corner numbers show on the plan when the room is selected. Sizes are measured from the corner.</p>
+    <div class="row"><span class="grow"></span><button class="btn primary" id="ccGo">${notch ? "Cut out" : "Cut the corner"}</button></div>`);
+  const sel = m.el.querySelector("#ccV"); S.hiCorner = { room: roomId, v: 0 }; renderPlan();
+  sel.onchange = () => { S.hiCorner = { room: roomId, v: +sel.value }; renderPlan(); };
+  const done = m.close; m.close = () => { S.hiCorner = null; done(); renderPlan(); };
+  m.el.querySelector("#ccGo").onclick = () => {
+    const a = parseLen(m.el.querySelector("#ccA").value), b = parseLen(m.el.querySelector("#ccB").value), v = +sel.value;
+    if (!(a > 0.05 && b > 0.05)) { toast("Type both sizes, like 0.6."); return; }
+    const before = JSON.stringify(S.plan), rr = S.plan.rooms.find(r => r.id === roomId);
+    if (!cutCorner(rr, v, a, b, notch)) { toast("That cut is too big for these walls."); return; }
+    commit(before); m.close(); toast(notch ? "Notch cut out. Undo puts it back." : "Corner cut. Undo puts it back.");
+  };
+}
+function cutCorner(room, v, a, b, notch) {
+  const n = room.pts.length, V = room.pts[v], P = room.pts[(v + n - 1) % n], N = room.pts[(v + 1) % n];
+  const lp = Math.hypot(P[0] - V[0], P[1] - V[1]), ln = Math.hypot(N[0] - V[0], N[1] - V[1]);
+  // first wall = the one coming into the corner (P to V), second = the one leaving it (V to N)
+  if (a >= lp - 0.2 || b >= ln - 0.2) return false;
+  const up = [(P[0] - V[0]) / lp, (P[1] - V[1]) / lp], un = [(N[0] - V[0]) / ln, (N[1] - V[1]) / ln];
+  const A = [V[0] + up[0] * a, V[1] + up[1] * a], B = [V[0] + un[0] * b, V[1] + un[1] * b];
+  const ins = (notch ? [A, [V[0] + up[0] * a + un[0] * b, V[1] + up[1] * a + un[1] * b], B] : [A, B]).map(q => [r2(q[0]), r2(q[1])]);
+  const pts = room.pts.slice(); pts.splice(v, 1, ...ins);
+  if (!simplePoly(pts)) return false;
+  const k = ins.length - 1, wIn = (v + n - 1) % n; // wall index v (leaving the corner) becomes v + k and starts b later
+  const shift = (j, along) => j === v ? [v + k, along - b] : j > v ? [j + k, along] : [j, along];
+  room.pts = pts;
+  room.openings.forEach(o => { if (o.type === "open" && o.edge === v) { o.edge = v + k; return; } const [w, al] = shift(o.edge, o.offset); o.edge = w; if (o.type !== "open") o.offset = r2(Math.max(0, al)); });
+  room.photos.forEach(p => { if (p.wall != null) p.wall = shift(p.wall, 0)[0]; });
+  (room.items || []).forEach(it => { const [w, al] = shift(it.wall, it.along); it.wall = w; it.along = r2(Math.max(0, al)); });
+  const m = {}; for (const [j, val] of Object.entries(room.measured || {})) { const jj = +j; if (!val) continue; if (jj === v || jj === wIn) continue; m[jj > v ? jj + k : jj] = true; } room.measured = m;
+  room.openings.forEach(o => clampOpening(room, o)); (room.items || []).forEach(it => clampItem(room, it));
+  return true;
 }
 function rotateRoom(room) {
   const b = bbox(room.pts), cx = Math.round((b.x0 + b.w / 2) * 20) / 20, cy = Math.round((b.y0 + b.h / 2) * 20) / 20;
@@ -2503,25 +2606,27 @@ async function arMeasure() {
 function openRebuild(roomId) {
   const old = S.plan.rooms.find(r => r.id === roomId); if (!old || !S.canWrite) return;
   const m = modal(`Rebuild ${old.name} from its photos`, `
-    <p style="margin:0">Claude looks at this room's ${old.photos.length} photos again and redraws it from scratch: walls, doors, windows and furniture. Changes you made to it by hand are replaced. You can undo afterwards.</p>
+    <p style="margin:0">Claude looks at this room's ${old.photos.length} photos again, starting from the room as it's drawn now. Walls marked ✓ Real keep their length, locked doors, windows and items stay put, and the room stays where it is on the plan. You can undo afterwards.</p>
     <div class="grid2">
       <label class="field">Room name (optional)<input id="rbName" placeholder="Claude will suggest one"></label>
       <label class="field">Wall in the first photo is (optional)<input class="num" id="rbKnown" value="${old.photos[0] && old.photos[0].len ? esc(fmtIn(old.photos[0].len)) : ""}" placeholder="${S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.80"}"></label>
       <label class="field" style="flex-direction:row;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="rbOut" ${isOut(old) ? "checked" : ""}> This is outdoors</label>
       <label class="field" style="flex-direction:row;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="rbZone" ${old.openings.some(o => o.type === "open") ? "checked" : ""}> One area of an open-plan space</label>
+      ${old.items.length ? `<label class="field" style="flex-direction:row;gap:8px;align-items:center;color:var(--ink);grid-column:1/-1"><input type="checkbox" id="rbKeepIt" checked> Keep the ${old.items.length} item${old.items.length > 1 ? "s" : ""} already placed, and only add what's missing</label>` : ""}
     </div>
     <div class="row"><button class="btn primary" id="rbGo">Rebuild the room</button><span class="grow"></span><span class="note" id="rbStatus"></span></div>`);
   m.el.querySelector("#rbGo").onclick = async () => {
     const go = m.el.querySelector("#rbGo"), status = m.el.querySelector("#rbStatus"); go.disabled = true;
     const known = parseLen(m.el.querySelector("#rbKnown").value), before = JSON.stringify(S.plan);
-    const photos = old.photos.map(p => ({ ...p, wall: null }));
+    const photos = old.photos.map(p => ({ ...p }));
+    const keepItems = !m.el.querySelector("#rbKeepIt") || m.el.querySelector("#rbKeepIt").checked;
     if (photos[0]) { if (known && known > 0.3) photos[0].len = known; else delete photos[0].len; }
     const idx = S.plan.rooms.indexOf(old); S.plan.rooms.splice(idx, 1);
     try {
-      const res = await buildRoomFromPhotos([], { photos, name: m.el.querySelector("#rbName").value.trim(), outdoor: m.el.querySelector("#rbOut").checked, zone: m.el.querySelector("#rbZone").checked, floor: old.floor, before }, t => status.textContent = t);
+      const res = await buildRoomFromPhotos([], { photos, name: m.el.querySelector("#rbName").value.trim(), outdoor: m.el.querySelector("#rbOut").checked, zone: m.el.querySelector("#rbZone").checked, floor: old.floor, before, current: old, keepItems }, t => status.textContent = t);
       m.close();
       const b = bbox(res.room.pts);
-      toast(`Rebuilt as ${res.room.name}: ${fmtLen(b.w)} × ${fmtLen(b.h)}${res.used && res.used < res.total ? `, from ${res.used} of ${res.total} photos` : ""}.${res.warn ? " " + res.warn : ""}`, 6000);
+      toast(`Rebuilt as ${res.room.name}: ${fmtLen(b.w)} × ${fmtLen(b.h)}${res.used && res.used < res.total ? `, from ${res.used} of ${res.total} photos` : ""}.${res.warn ? " " + res.warn : ""}${res.notes ? " Claude: " + res.notes : ""}`, 9000);
     } catch (e) { S.plan.rooms.splice(idx, 0, old); status.textContent = (e && e.message) || "Something went wrong. Try again."; go.disabled = false; }
   };
 }
@@ -3039,7 +3144,7 @@ async function buildRoomFromPhotos(files, opt, progress) {
     else { await idb.put(p.id, blob); localPhotoURL[p.id] = URL.createObjectURL(blob); p.local = true; }
     photos.push(p); aiBlobs.push(blob);
   }
-  const existing = roomsOn(opt.floor), fl = S.plan.floors.find(f => f.id === opt.floor);
+  const existing = roomsOn(opt.floor), fl = S.plan.floors.find(f => f.id === opt.floor), cur = opt.current || null;
   let est = null, warn = "", sel = null, used = 0;
   // remember what each guided photo shows and any measured wall, so the room can be rebuilt later
   if (opt.labels) photos.forEach((p, i) => { if (opt.labels[i]) p.label = opt.labels[i]; });
@@ -3059,6 +3164,12 @@ async function buildRoomFromPhotos(files, opt, progress) {
       progress(`Claude is looking at ${n}${n < aiBlobs.length ? ` of ${aiBlobs.length}` : ""} photo${n > 1 ? "s" : ""}. This can take up to a minute…`);
       const prompt = `You are helping build a floor plan of a house from phone photos. These ${n} photos all show ONE ${opt.outdoor ? "outdoor area (garden, patio, yard or driveway)" : "room or outdoor space"} on the ${fl.name}, in the order they were taken, turning clockwise.${opt.outdoor ? " Treat its boundary (fences, hedges, walls, the house wall) as its walls." : " If it is a garden or other outdoor space, say so and treat its boundary (fences, hedges, walls) as its walls."}
 Rooms already drawn on this floor: ${existing.length ? existing.map(r => `"${r.name}"`).join(", ") : "none yet"}.
+${cur ? `This room is already drawn, and the user has checked parts of it by hand. Its current outline, clockwise as seen from above:
+${outlineBrief(cur)}
+The user has tagged the photos: ${sel.map((i, k) => `photo ${k + 1} ${Number.isInteger(photos[i].wall) && photos[i].wall < cur.pts.length ? `shows wall ${photos[i].wall}` : "is not tagged"}`).join("; ")}.
+Number the walls exactly as in this current outline, with wall 0 first. Keep every TAPE-MEASURED length exactly as given. Keep the current shape unless the photos clearly show it is wrong, for example a cut-off corner, a notch, a triangle or an angled wall that isn't drawn; then add or remove walls as needed, keep the measured walls, and say what you changed in "notes".
+Doors and windows already placed: ${openingsBrief(cur) || "none"}. Keep the LOCKED ones exactly; include all doors and windows you can see in openings.
+${opt.keepItems ? `Items already placed: ${itemsBrief(cur) || "none"}. Do NOT list these again. In items, list only things you can see that are missing from this list.` : itemsBrief(cur, true) ? `Items the user has locked in place: ${itemsBrief(cur, true)}. Do NOT list these again.` : ""}` : ""}
 ${opt.name ? `The user calls this room "${opt.name}".` : `Suggest a short name for the room, such as Kitchen, Bedroom 2 or Hall, that is not already in the list above.`}
 ${selMeasured.map(x => `The main wall facing the camera in photo ${x.photo + 1} is ${x.len.toFixed(2)} m long, measured with a tape.${x.photo === 0 ? " Use it as the scale." : ""}`).join(" ")}
 ${selLabels && selLabels.some(l => l !== "another view") ? `The user took these with a guide that labels each photo: ${selLabels.map((l, i) => `photo ${i + 1} is ${l}`).join("; ")}. The wall photos go round the room clockwise; the other photos are extra views to help you place doors, windows and items.` : ""}
@@ -3069,7 +3180,7 @@ ${ITEM_PROMPT}
 Reply with JSON only, in this shape:
 {"name":"Kitchen","outdoor":false,"walls":[{"length_m":4.2,"turn":"R"},{"length_m":3.1,"turn":"R"},{"length_m":4.2,"turn":"R"},{"length_m":3.1,"turn":"R"}],"ceiling_height_m":2.4,"photo_walls":[0,1,2,3],"openings":[{"type":"door","wall":2,"offset_m":0.5,"width_m":0.8,"height_m":2.03,"sill_m":0,"leads_to":"Hall"},{"type":"window","wall":0,"offset_m":1.2,"width_m":1.2,"height_m":1.2,"sill_m":0.9,"leads_to":null}],${ITEM_JSON},"confidence":"low|medium|high","notes":"one sentence on which extra photo or measurement would most improve this"}
 photo_walls lists, for each photo in order, the number of the wall it mainly shows, or null if unclear. offset_m is the distance along the wall from its start corner, going clockwise, to the near edge of the opening. For each door, leads_to is the room it opens into: an exact name from the list above when it matches, "outside" for an outside door, or a short guess such as "Hall" or "Landing". Use null for windows. Do not invent openings you cannot see.`;
-      try { est = await store.sample.json(prompt, { images: imgs, modelTier: "complex" }); }
+      try { est = await store.sample.json(cur ? prompt.replace("starting at the left end of the main wall facing the camera in photo 1, so wall 0 is that wall", "starting with wall 0 of the current outline described above") : prompt, { images: imgs, modelTier: "complex" }); }
       catch (e) {
         if (e && e.code === "bad_key") warn = "Your API key was refused, so the room starts as a box. Check the key in Settings.";
         else if (e && e.code === "network") warn = "Couldn't reach Claude (are you offline?), so the room starts as a box. Use Estimate with Claude on it later.";
@@ -3085,7 +3196,8 @@ photo_walls lists, for each photo in order, the number of the wall it mainly sho
   // a tape-measured wall 1 sets the scale of the whole room, not just that wall
   let f = 1;
   const known0 = sel && sel[0] === 0 && photos[0].len ? photos[0].len : null;
-  if (est && known0 && r.pts.length >= 4 && Array.isArray(est.walls) && +(est.walls[0] || {}).length_m > 0) { f = known0 / +est.walls[0].length_m; if (f > 0.4 && f < 2.5) r.pts = r.pts.map(([x, y]) => [r2(x * f), r2(y * f)]); else f = 1; }
+  if (cur) { /* tape-measured walls set the scale below */ }
+  else if (est && known0 && r.pts.length >= 4 && Array.isArray(est.walls) && +(est.walls[0] || {}).length_m > 0) { f = known0 / +est.walls[0].length_m; if (f > 0.4 && f < 2.5) r.pts = r.pts.map(([x, y]) => [r2(x * f), r2(y * f)]); else f = 1; }
   else if (est && Array.isArray(est.walls) && est.walls.length >= 2) { const w = +est.walls[0].length_m || 3.5, d = +est.walls[1].length_m || 3; r.pts = [[0, 0], [w, 0], [w, d], [0, d]].map(p => [r2(p[0]), r2(p[1])]); }
   if (est && est.ceiling_height_m > 1.8 && est.ceiling_height_m < 6) r.height = Math.round(est.ceiling_height_m * 100) / 100;
   const nE = r.pts.length;
@@ -3110,6 +3222,27 @@ photo_walls lists, for each photo in order, the number of the wall it mainly sho
   r.photos = photos;
   for (const mz of measured) { const w = photos[mz.photo].wall; if (Number.isInteger(w) && !r.measured[w] && setEdgeLength(r, w, mz.len)) r.measured[w] = true; }
   r.openings.forEach(o => clampOpening(r, o));
+  if (cur) { // rebuilding: keep what the user has checked, and keep the room where it is
+    const same = r.pts.length === cur.pts.length, oe = edges(cur);
+    if (est && pts) {
+      if (same && Array.isArray(est.walls)) { const p2 = polyFromWalls(est.walls.map((w, i) => ({ ...w, length_m: cur.measured[i] ? oe[i].len : w.length_m, fixed: !!cur.measured[i] }))); if (p2) r.pts = p2; }
+      r.pts = alignLike(r.pts, cur);
+    } else r.pts = clone(cur.pts);
+    const sameNow = r.pts.length === cur.pts.length;
+    r.id = cur.id; r.c = cur.c; r.floor = cur.floor; if (!opt.name) r.name = cur.name; if (cur.height) r.height = cur.height; if (!opt.outdoor && cur.kind === "outdoor") r.kind = "outdoor";
+    r.measured = sameNow ? { ...cur.measured } : {};
+    const old = sameNow ? { openings: clone(cur.openings), items: clone(cur.items || []) } : (() => { const t = { pts: r.pts, openings: [], items: [] }; remapOnto(cur, t); return t; })();
+    const lockedOps = old.openings.filter(o => o.locked);
+    const fresh = r.openings.length ? r.openings.filter(n => !lockedOps.some(k => k.edge === n.edge && (n.type === "open" || k.type === "open" || (n.offset < k.offset + k.width && k.offset < n.offset + n.width)))) : old.openings.filter(o => !o.locked);
+    r.openings = [...lockedOps, ...fresh]; r.openings.forEach(o => clampOpening(r, o));
+    const kept = old.items.filter(it => opt.keepItems || it.locked); kept.forEach(it => clampItem(r, it));
+    const tmp = { pts: r.pts, items: kept }; r.items = [...kept, ...newItemsOnly(tmp, r.items)];
+    if (!est) photos.forEach((p, i) => { p.wall = cur.photos[i] ? cur.photos[i].wall : p.wall; });
+    if (!sameNow && Object.values(cur.measured || {}).some(Boolean)) warn = (warn ? warn + " " : "") + "The number of walls changed, so check which walls are still ✓ Real.";
+    S.plan.rooms.push(r); S.sel = r.id; S.tab = "room";
+    commit(opt.before || JSON.stringify(S.plan)); renderPlan();
+    return { room: r, used, total: photos.length, ai: !!est, notes: est && typeof est.notes === "string" ? est.notes : "", warn };
+  }
   // which room does it connect to?
   let nb = opt.nextTo ? existing.find(x => x.id === opt.nextTo) : null;
   if (!nb) for (const o of r.openings) { if (o.leadsTo && !/outside/i.test(o.leadsTo)) { nb = existing.find(x => sameName(x.name, o.leadsTo)); if (nb) break; } }
