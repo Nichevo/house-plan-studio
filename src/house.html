@@ -158,6 +158,8 @@ table.tot tr.sum td{font-weight:600;border-bottom:0}
 .dim{fill:var(--ink);font-family:var(--f-num);text-anchor:middle;dominant-baseline:middle;pointer-events:none}
 .dim.unk{fill:var(--warn)}
 .edge-hit{stroke:transparent;cursor:grab}
+.vtx-hit{fill:transparent;cursor:move}
+.vtx{fill:var(--sel);stroke:var(--panel);pointer-events:none}
 .knob{fill:var(--panel);stroke:var(--sel);pointer-events:none}
 .out{fill:var(--garden);cursor:move}
 .fence{fill:none;stroke:var(--garden-line)}
@@ -338,7 +340,7 @@ svg.facmove{cursor:move}
       <span class="note" data-only="2d">Photos appear as camera dots on the walls. Tap one to see it.</span>
       <span class="note" data-only="3d">Photos are shown on the walls they were tagged to.</span>
     </div>
-    <div class="hint" id="hint">Drag a room to move it. Select it, then drag a wall to resize. Scroll or pinch to zoom, drag empty space to pan.</div>
+    <div class="hint" id="hint">Drag a room to move it. Select it, then drag a wall to resize or a corner to angle it. Scroll or pinch to zoom, drag empty space to pan.</div>
   </div>
   <aside>
     <div class="tabs" role="tablist">
@@ -436,7 +438,7 @@ function centroid(p) {
 function pip(q, p) { let ins = false; for (let i = 0, j = p.length - 1; i < p.length; j = i++) { const [xi, yi] = p[i], [xj, yj] = p[j]; if (((yi > q[1]) !== (yj > q[1])) && (q[0] < (xj - xi) * (q[1] - yi) / (yj - yi) + xi)) ins = !ins; } return ins; }
 function distSeg(q, a, b) { const dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy; let t = l ? ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l : 0; t = Math.max(0, Math.min(1, t)); return Math.hypot(q[0] - a[0] - t * dx, q[1] - a[1] - t * dy); }
 function wallNames(room) {
-  const es = edges(room), base = es.map(e => { const o = [-e.n[0], -e.n[1]]; return Math.abs(o[0]) > Math.abs(o[1]) ? (o[0] > 0 ? "East" : "West") : (o[1] > 0 ? "South" : "North"); });
+  const es = edges(room), base = es.map(e => { const o = [-e.n[0], -e.n[1]], ns = o[1] > 0 ? "South" : "North", ew = o[0] > 0 ? "east" : "west"; if (Math.abs(o[0]) > 0.38 && Math.abs(o[1]) > 0.38) return ns + "-" + ew; return Math.abs(o[0]) > Math.abs(o[1]) ? (o[0] > 0 ? "East" : "West") : ns; });
   const cnt = {}; base.forEach(b => cnt[b] = (cnt[b] || 0) + 1);
   const word = isOut(room) ? " side" : " wall";
   const seen = {}; return base.map(b => { if (cnt[b] === 1) return b + word; seen[b] = (seen[b] || 0) + 1; return `${b}${word} ${seen[b]}`; });
@@ -805,6 +807,8 @@ function planMarkup(fid, o) {
       const m = [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2];
       out.push(`<circle class="knob" cx="${m[0]}" cy="${m[1]}" r="${5.5 / k}" stroke-width="${2 / k}"/>`);
     }
+    if (S.vtxAngle) { const c = centroid(sr.pts); S.vtxAngle.forEach((a, i) => { const q = sr.pts[i], d = Math.hypot(c[0] - q[0], c[1] - q[1]) || 1, x = q[0] + (c[0] - q[0]) / d * 0.45, y = q[1] + (c[1] - q[1]) / d * 0.45; out.push(`<text x="${x}" y="${y}" font-size="${12 / k}" font-weight="700" text-anchor="middle" dominant-baseline="middle" fill="var(--sel)" pointer-events="none">${a}°</text>`); }); }
+    if (S.canWrite) sr.pts.forEach((q, i) => out.push(`<circle class="vtx-hit" data-vtx="${i}" cx="${q[0]}" cy="${q[1]}" r="${15 / k}"/><rect class="vtx" x="${q[0] - 5 / k}" y="${q[1] - 5 / k}" width="${10 / k}" height="${10 / k}" stroke-width="${1.5 / k}"/>`));
   }
   if (o.keyWalls) o.keyWalls.forEach((c, i) => {
     const e = edges(c.room)[c.wall], mx = (e.a[0] + e.b[0]) / 2 + e.n[0] * 0.35, my = (e.a[1] + e.b[1]) / 2 + e.n[1] * 0.35, rr = 9 / k;
@@ -868,6 +872,8 @@ svg.addEventListener("pointerdown", e => {
     return;
   }
   if (alignSite()) { const st = alignSite(); drag = { type: "site", sc: [e.clientX, e.clientY], p0: toM(e.clientX, e.clientY), start: [st.x, st.y], before: JSON.stringify(S.plan), moved: false }; return; }
+  const vtxEl = e.target.closest("[data-vtx]");
+  if (vtxEl && S.canWrite && selRoom()) { const r = selRoom(); drag = { type: "vtx", i: +vtxEl.dataset.vtx, id: r.id, start: clone(r.pts), p0: toM(e.clientX, e.clientY), sc: [e.clientX, e.clientY], before: JSON.stringify(S.plan), moved: false }; return; }
   const edgeEl = e.target.closest("[data-edge]"), roomEl = e.target.closest("[data-room]"), camEl = e.target.closest("[data-photo]"), itemEl = e.target.closest("[data-item]");
   const p0 = toM(e.clientX, e.clientY), sc = [e.clientX, e.clientY];
   if (camEl) { const [rid, pid] = camEl.dataset.photo.split(":"); drag = null; pointers.delete(e.pointerId); openPhotoViewer(rid, pid); return; }
@@ -914,6 +920,11 @@ svg.addEventListener("pointermove", e => {
   if (drag.type === "site") { const st = alignSite(); if (!st) return; const p = toM(e.clientX, e.clientY); st.x = r2(drag.start[0] + p[0] - drag.p0[0]); st.y = r2(drag.start[1] + p[1] - drag.p0[1]); renderPlan(); return; }
   const r = S.plan.rooms.find(x => x.id === drag.id); if (!r) return;
   const p = toM(e.clientX, e.clientY), dx = p[0] - drag.p0[0], dy = p[1] - drag.p0[1], thr = Math.max(0.06, 10 / S.k), grid = S.k > 60 ? 0.05 : 0.1;
+  if (drag.type === "vtx") {
+    const q = [drag.start[drag.i][0] + dx, drag.start[drag.i][1] + dy], pts = moveCorner(r, drag.start, drag.i, q, thr);
+    if (pts) { r.pts = pts; S.vtxAngle = cornerAngles(pts); }
+    renderPlan(); return;
+  }
   if (drag.type === "item") {
     const it = r.items.find(x => x.id === drag.iid); if (!it) return;
     const e0 = edges(r)[it.wall]; if (!e0) return;
@@ -952,6 +963,13 @@ function endPointer(e) {
   if (d.type === "pan" && !d.moved) { if (S.sel) { S.sel = null; if (S.tab === "room") S.tab = "rooms"; renderAll(); } return; }
   if (d.type === "item") { if (d.moved) commit(d.before); else renderPane(); return; }
   if (d.type === "site" || d.type === "fac" || d.type === "sroom") { if (d.moved) commit(d.before); return; }
+  if (d.type === "vtx") {
+    S.vtxAngle = null;
+    const r = S.plan.rooms.find(x => x.id === d.id);
+    if (r && d.moved) { const n = r.pts.length; delete r.measured[d.i]; delete r.measured[(d.i + n - 1) % n]; r.openings.forEach(o => clampOpening(r, o)); r.items.forEach(it => clampItem(r, it)); commit(d.before); }
+    else renderPlan();
+    return;
+  }
   if ((d.type === "room" || d.type === "edge") && d.moved) {
     const r = S.plan.rooms.find(x => x.id === d.id);
     if (d.type === "edge" && r) { const n = r.pts.length; delete r.measured[(d.i + n - 1) % n]; delete r.measured[(d.i + 1) % n]; }
@@ -1098,6 +1116,9 @@ function renderRoom() {
     ${store.assets ? "" : `<p class="note">Photos are kept in this browser on this device.</p>`}
   </div>
   ${ro ? "" : `<div class="sec"><div class="row"><button class="btn" id="rotRoom">Rotate 90°</button><button class="btn" id="flipRoom">Flip</button><button class="btn" id="dupRoom">Duplicate room</button><span class="confirm" id="delWrap"><button class="btn danger" id="delRoom">Delete room</button></span></div></div>
+  <div class="sec"><h4 style="margin:0 0 6px">Corners and angled walls</h4><p class="note" style="margin:0 0 6px">Drag a square corner handle on the plan to angle a wall. It snaps to 45° and 90° and to other rooms' corners. To bend a straight wall, add a corner to it first.</p>
+    <div class="row"><select class="inp" id="cnWall" style="flex:1;min-width:120px">${wallNames(r).map((nm, i) => `<option value="${i}">${esc(nm)}</option>`).join("")}</select><button class="btn small" id="cnAdd">Add a corner</button></div>
+    <div class="row"><select class="inp" id="cnPt" style="flex:1;min-width:120px">${cornerAngles(r.pts).map((a, i) => `<option value="${i}">Corner ${i + 1} (${a}°)</option>`).join("")}</select><button class="btn small" id="cnDel" ${r.pts.length <= 3 ? "disabled" : ""}>Remove corner</button></div></div>
   <div class="sec"><h4 style="margin:0 0 6px">Resize to fit</h4><p class="note" style="margin:0 0 6px">Shrink or grow the whole room evenly, keeping its shape, to fit the house outline. Measured walls stay locked, so set those lengths instead.</p>
     <div class="row"><button class="btn small" data-rsz="0.95">−5%</button><button class="btn small" data-rsz="0.99">−1%</button><button class="btn small" data-rsz="1.01">+1%</button><button class="btn small" data-rsz="1.05">+5%</button>
     <label class="row" style="gap:4px;font-size:13px"><input type="checkbox" id="rszAll"> Whole floor</label></div></div>`}`;
@@ -1200,6 +1221,8 @@ function bindRoom(r) {
   on("#rebuildBtn", "click", () => openRebuild(id));
   on("#rotRoom", "click", () => edit(() => rotateRoom(R())));
   on("#flipRoom", "click", () => edit(() => flipRoom(R())));
+  on("#cnAdd", "click", () => { const i = +pane.querySelector("#cnWall").value; edit(() => splitWall(R(), i)); toast("Corner added in the middle of the wall. Drag its handle on the plan."); });
+  on("#cnDel", "click", () => { const v = +pane.querySelector("#cnPt").value; const before = JSON.stringify(S.plan); if (removeCorner(R(), v)) commit(before); else toast("Removing that corner would make the walls cross."); });
   pane.querySelectorAll("[data-rsz]").forEach(b => b.onclick = () => {
     const all = pane.querySelector("#rszAll").checked, r = R(), list = all ? roomsOn(r.floor) : [r];
     const locked = list.filter(x => Object.values(x.measured || {}).some(Boolean));
@@ -1698,7 +1721,7 @@ function showSuggestions(roomId, res, m, status, out, mode = {}) {
   out.querySelector("#sApply").onclick = () => {
     edit(() => {
       const rr = S.plan.rooms.find(r => r.id === roomId); if (!rr) return;
-      const rect4 = rr.pts.length === 4;
+      const rect4 = rr.pts.length === 4 && edges(rr).every(e => Math.abs(e.d[0]) > 0.999 || Math.abs(e.d[1]) > 0.999);
       const chosen = walls.filter((w, i) => out.querySelector(`[data-sw="${i}"]`)?.checked);
       if (rect4) {
         for (const ax of [0, 1]) { const vs = chosen.filter(w => w.wall % 2 === ax).map(w => w.length_m); if (vs.length) setEdgeLength(rr, ax, vs.reduce((a, b) => a + b) / vs.length); }
@@ -1718,21 +1741,24 @@ function showSuggestions(roomId, res, m, status, out, mode = {}) {
 /* ---------- build a room from its photos ---------- */
 const HEAD = [[1, 0], [0, 1], [-1, 0], [0, -1]]; // east, south, west, north (y down)
 function polyFromWalls(walls) {
-  if (!Array.isArray(walls) || walls.length < 4 || walls.length > 12) return null;
-  const turns = walls.map(w => String(w.turn || "R").toUpperCase().startsWith("L") ? -1 : 1);
-  if (turns.reduce((a, b) => a + b, 0) !== 4) return null;
-  const lens = walls.map(w => Math.max(0.3, Math.min(40, +w.length_m || 0)));
-  const heads = []; let h = 0; for (let i = 0; i < lens.length; i++) { heads.push(h); h = (h + turns[i] + 4) % 4; }
-  const walk = () => { const p = [[0, 0]]; for (let i = 0; i < lens.length - 1; i++) { const [x, y] = p[p.length - 1]; p.push([x + HEAD[heads[i]][0] * lens[i], y + HEAD[heads[i]][1] * lens[i]]); } return p; };
-  // close the outline by adjusting the last east-west and north-south walls
-  const end = () => { const p = walk(), [x, y] = p[p.length - 1], i = lens.length - 1; return [x + HEAD[heads[i]][0] * lens[i], y + HEAD[heads[i]][1] * lens[i]]; };
-  let [ex, ey] = end();
-  for (let i = lens.length - 1; i >= 0 && Math.abs(ex) > 1e-6; i--) if (heads[i] % 2 === 0) { lens[i] -= ex * HEAD[heads[i]][0]; break; }
-  for (let i = lens.length - 1; i >= 0 && Math.abs(ey) > 1e-6; i--) if (heads[i] % 2 === 1) { lens[i] -= ey * HEAD[heads[i]][1]; break; }
-  [ex, ey] = end();
-  if (Math.hypot(ex, ey) > 0.01 || lens.some(l => l < 0.3)) return null;
-  const pts = walk().map(p => [r2(p[0]), r2(p[1])]);
-  return shoelace(pts) > 0 ? pts : null;
+  if (!Array.isArray(walls) || walls.length < 3 || walls.length > 16) return null;
+  // turn: "R" = 90° right (ordinary corner), "L" = 90° left (inward corner), or degrees, + right / − left (45 for each bend of a cut-off corner)
+  const turns = walls.map(w => { const t = w.turn; if (typeof t === "number" && isFinite(t)) return t; const m = String(t || "R").trim().toUpperCase().match(/^([RL])?\s*(-?\d+(?:\.\d+)?)?/); const deg = m && m[2] != null ? +m[2] : 90; return (m && m[1] === "L" ? -1 : 1) * deg; });
+  const sum = turns.reduce((x, y) => x + y, 0); if (Math.abs(sum - 360) > 6) return null;
+  const fixT = turns.map(t => t * 360 / sum), lens = walls.map(w => Math.max(0.3, Math.min(40, +w.length_m || 0)));
+  const dirs = []; let h = 0; for (let i = 0; i < lens.length; i++) { let a = h; const r45 = Math.round(a / 45) * 45; if (Math.abs(a - r45) < 3) a = r45; dirs.push([Math.cos(a * Math.PI / 180), Math.sin(a * Math.PI / 180)].map(v => Math.abs(v) < 1e-9 ? 0 : v)); h += fixT[i]; }
+  const end = () => lens.reduce((p, l, i) => [p[0] + dirs[i][0] * l, p[1] + dirs[i][1] * l], [0, 0]);
+  // close the outline with the smallest relative change to the wall lengths (least squares)
+  const [ex, ey] = end(); let a11 = 0, a12 = 0, a22 = 0;
+  lens.forEach((l, i) => { const w = l * l, [dx, dy] = dirs[i]; a11 += w * dx * dx; a12 += w * dx * dy; a22 += w * dy * dy; });
+  const det = a11 * a22 - a12 * a12; if (Math.abs(det) < 1e-9) return null;
+  const lx = (-ex * a22 + ey * a12) / det, ly = (-ey * a11 + ex * a12) / det;
+  lens.forEach((l, i) => { lens[i] = l + l * l * (dirs[i][0] * lx + dirs[i][1] * ly); });
+  const [fx, fy] = end();
+  if (Math.hypot(fx, fy) > 0.01 || lens.some(l => l < 0.25)) return null;
+  const pts = [[0, 0]]; for (let i = 0; i < lens.length - 1; i++) { const [x, y] = pts[pts.length - 1]; pts.push([x + dirs[i][0] * lens[i], y + dirs[i][1] * lens[i]]); }
+  const out = pts.map(p => [r2(p[0]), r2(p[1])]);
+  return simplePoly(out) ? out : null;
 }
 function rotateRoom(room) {
   const b = bbox(room.pts), cx = Math.round((b.x0 + b.w / 2) * 20) / 20, cy = Math.round((b.y0 + b.h / 2) * 20) / 20;
@@ -1748,6 +1774,57 @@ function flipRoom(room) {
   const m = {}; Object.keys(room.measured).forEach(k => { if (room.measured[k]) m[map(+k)] = true; }); room.measured = m;
 }
 let rszAllKeep = false;
+/* ---------- angled walls: drag a corner, add or remove corners ---------- */
+function segsCross(a, b, c, d) { const o = (p, q, r) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])); return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0; }
+function simplePoly(pts) {
+  const n = pts.length; if (n < 3 || shoelace(pts) <= 0) return false;
+  for (let i = 0; i < n; i++) for (let j = i + 2; j < n; j++) { if (i === 0 && j === n - 1) continue; if (segsCross(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n])) return false; }
+  return !edges({ pts }).some(e => e.len < 0.25);
+}
+// move corner i towards q, snapping its two walls to 45° steps and to other rooms' corners
+function moveCorner(room, start, i, q, thr) {
+  const n = start.length, P = start[(i + n - 1) % n], N = start[(i + 1) % n], dirs = [0, 1, 2, 3, 4, 5, 6, 7].map(a => [Math.cos(a * Math.PI / 4), Math.sin(a * Math.PI / 4)]);
+  const proj = (A, d) => { const t = (q[0] - A[0]) * d[0] + (q[1] - A[1]) * d[1]; return [A[0] + d[0] * t, A[1] + d[1] * t]; };
+  const meet = (A, a, B, b) => { const den = a[0] * b[1] - a[1] * b[0]; if (Math.abs(den) < 1e-6) return null; const t = ((B[0] - A[0]) * b[1] - (B[1] - A[1]) * b[0]) / den; return [A[0] + a[0] * t, A[1] + a[1] * t]; };
+  const cands = [];
+  for (const o of S.plan.rooms) if (o.id !== room.id && o.floor === room.floor) for (const c of o.pts) cands.push({ c, w: 0 });
+  for (const a of dirs) for (const b of dirs) { const c = meet(P, a, N, b); if (c) cands.push({ c, w: 1 }); }
+  for (const a of dirs) { cands.push({ c: proj(P, a), w: 2 }); cands.push({ c: proj(N, a), w: 2 }); }
+  let best = null, bd = 1e9;
+  for (const { c, w } of cands) { const d = Math.hypot(c[0] - q[0], c[1] - q[1]); if (d < thr && d + w * thr * 0.15 < bd) { bd = d + w * thr * 0.15; best = c; } }
+  const v = best || [Math.round(q[0] / 0.05) * 0.05, Math.round(q[1] / 0.05) * 0.05];
+  const pts = clone(start); pts[i] = [r2(v[0]), r2(v[1])];
+  return simplePoly(pts) ? pts : null;
+}
+function cornerAngles(pts) { const n = pts.length; return pts.map((b, i) => { const a = pts[(i + n - 1) % n], c = pts[(i + 1) % n], u = [a[0] - b[0], a[1] - b[1]], w = [c[0] - b[0], c[1] - b[1]]; let ang = Math.atan2(u[1] * w[0] - u[0] * w[1], u[0] * w[0] + u[1] * w[1]) * 180 / Math.PI; return Math.round(((ang % 360) + 360) % 360); }); }
+// insert a corner in the middle of wall i; everything tagged to later walls moves up by one
+function splitWall(room, i) {
+  const es = edges(room), e = es[i], n = room.pts.length, half = e.len / 2, mid = [r2((e.a[0] + e.b[0]) / 2), r2((e.a[1] + e.b[1]) / 2)];
+  const map = (j, along) => j < i ? [j, along] : j > i ? [j + 1, along] : along < half ? [i, along] : [i + 1, along - half];
+  room.pts.splice(i + 1, 0, mid);
+  const extra = [];
+  room.openings.forEach(o => { if (o.type === "open" && o.edge === i) { extra.push({ ...clone(o), id: uid(), edge: i + 1 }); return; } const [w, a] = map(o.edge, o.offset + (o.edge === i ? o.width / 2 : 0)); o.offset = o.edge === i ? r2(a - o.width / 2) : o.offset; o.edge = w; });
+  room.openings.push(...extra);
+  room.photos.forEach(p => { if (p.wall != null && p.wall > i) p.wall++; });
+  (room.items || []).forEach(it => { const [w, a] = map(it.wall, it.along + (it.wall === i ? it.w / 2 : 0)); it.along = it.wall === i ? r2(a - it.w / 2) : it.along; it.wall = w; });
+  const m = {}; Object.keys(room.measured || {}).forEach(k => { const j = +k; if (room.measured[k] && j !== i) m[j > i ? j + 1 : j] = true; }); room.measured = m;
+  room.openings.forEach(o => clampOpening(room, o)); (room.items || []).forEach(it => clampItem(room, it));
+}
+// remove corner v, joining its two walls into one
+function removeCorner(room, v) {
+  const n = room.pts.length; if (n <= 3) return false;
+  const pts = room.pts.filter((_, k) => k !== v); if (!simplePoly(pts)) return false;
+  const es = edges(room), prev = (v + n - 1) % n, ni = q => q < v ? q : q - 1;
+  const map = (j, along) => j === prev ? [ni(prev), along] : j === v ? [ni(prev), along + es[prev].len] : [ni(j), along];
+  room.pts = pts;
+  room.openings = room.openings.filter(o => !(o.type === "open" && o.edge === v && room.openings.some(x => x.type === "open" && x.edge === prev)));
+  room.openings.forEach(o => { const [w, a] = map(o.edge, o.offset); o.edge = w; o.offset = r2(a); });
+  room.photos.forEach(p => { if (p.wall != null) p.wall = map(p.wall, 0)[0]; });
+  (room.items || []).forEach(it => { const [w, a] = map(it.wall, it.along); it.wall = w; it.along = r2(a); });
+  room.measured = {};
+  room.openings.forEach(o => clampOpening(room, o)); (room.items || []).forEach(it => clampItem(room, it));
+  return true;
+}
 /* scale rooms evenly about their combined centre; doors and items keep their size and slide along with their walls */
 function scaleRooms(list, f) {
   const b = bbox(list.flatMap(r => r.pts)), cx = b.x0 + b.w / 2, cy = b.y0 + b.h / 2;
@@ -2526,7 +2603,7 @@ ${opt.name ? `The user calls this room "${opt.name}".` : `Suggest a short name f
 ${selMeasured.map(x => `The main wall facing the camera in photo ${x.photo + 1} is ${x.len.toFixed(2)} m long, measured with a tape.${x.photo === 0 ? " Use it as the scale." : ""}`).join(" ")}
 ${selLabels && selLabels.some(l => l !== "another view") ? `The user took these with a guide that labels each photo: ${selLabels.map((l, i) => `photo ${i + 1} is ${l}`).join("; ")}. The wall photos go round the room clockwise; the other photos are extra views to help you place doors, windows and items.` : ""}
 ${opt.zone || (selLabels && selLabels.some(l => /open side/.test(l))) ? `This is ONE AREA of a larger open-plan space, photographed on its own. Trace only this area. Where a side has no wall because it opens straight into the next area, still count it as a wall in the outline, following where the area ends (a change of flooring, the end of a bench or wall, a beam or a step), and add it to openings as {"type":"open","wall":n,"leads_to":"Living"} naming the area it opens into. Name the room after this area only, such as Kitchen, Dining or Living.` : `If this is an open-plan space that combines several areas (such as entrance, kitchen, dining and living) with no doors between them, treat it all as ONE room: trace its whole outer boundary with as many walls as it needs, and name it after its main uses, such as "Kitchen / Living".`} Only put a door where there is a doorway in a wall; a wide opening between areas of the same space is not a door. Doors are usually 0.7 to 0.9 m wide.
-Work out the room's outline. Walk around the walls clockwise as seen from above, starting at the left end of the main wall facing the camera in photo 1, so wall 0 is that wall. For each wall give its length and whether you turn right ("R", an ordinary corner like in a rectangle) or left ("L", an inward corner like in an L-shaped room) at its end. A rectangular room has 4 walls, all "R". An L-shaped room has 6 walls, five "R" and one "L". Ignore small recesses, chimney breasts and bay windows under 0.4 m deep.
+Work out the room's outline. Walk around the walls clockwise as seen from above, starting at the left end of the main wall facing the camera in photo 1, so wall 0 is that wall. For each wall give its length and how you turn at its end: "R" for an ordinary square corner like in a rectangle, "L" for an inward square corner like in an L-shaped room, or a number of degrees when the corner isn't square (positive to the right, negative to the left; the turns always add up to 360). A rectangular room has 4 walls, all "R". An L-shaped room has 6 walls, five "R" and one "L". A rectangle with one corner cut off at 45° has 5 walls with turns "R", "R", "R", 45, 45. A bay window that angles out is three short walls with turns like -45, 45, 45, -45 around it. Look carefully for walls that meet at angles other than 90°; don't square them off. Ignore small recesses, chimney breasts and bay windows under 0.4 m deep.
 For scale, use any measured length first, then objects of standard size: interior doors are about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high and 0.60 m deep, light switches about 1.2 m up, sockets about 0.3 m up, beds about 1.9 to 2.0 m long, and floor tiles and boards of standard sizes. Typical ceilings are 2.3 to 2.7 m.
 ${ITEM_PROMPT}
 Reply with JSON only, in this shape:
