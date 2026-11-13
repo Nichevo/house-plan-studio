@@ -1217,6 +1217,26 @@ function bindRoom(r) {
 }
 $("#photoInput").addEventListener("change", e => { const r = S.plan.rooms.find(x => x.id === e.target.dataset.room); if (r) addPhotos(r, e.target.files); });
 
+/* walls of a room that face a neighbouring room on the same floor, back to back or across a small gap */
+function neighbourWalls(room, maxGap = 0.6) {
+  const out = [], es = edges(room);
+  if (isOut(room)) return out;
+  for (const B of roomsOn(room.floor)) {
+    if (B === room || isOut(B)) continue;
+    const fs = edges(B);
+    for (const e of es) for (const f of fs) {
+      if (e.n[0] * f.n[0] + e.n[1] * f.n[1] > -0.99) continue;
+      const gap = (f.a[0] - e.a[0]) * -e.n[0] + (f.a[1] - e.a[1]) * -e.n[1]; // distance out from this wall to theirs
+      if (gap < -0.05 || gap > maxGap) continue;
+      let u0 = (f.a[0] - e.a[0]) * e.d[0] + (f.a[1] - e.a[1]) * e.d[1], u1 = (f.b[0] - e.a[0]) * e.d[0] + (f.b[1] - e.a[1]) * e.d[1];
+      if (u0 > u1) [u0, u1] = [u1, u0];
+      const ov = Math.min(e.len, u1) - Math.max(0, u0); if (ov < 0.3) continue;
+      const open = room.openings.some(o => o.type === "open" && o.edge === e.i) || B.openings.some(o => o.type === "open" && o.edge === f.i);
+      out.push({ wall: e.i, len: e.len, room: B, wallB: f.i, lenB: f.len, measuredB: !!B.measured[f.i], shared: ov, gap: Math.max(0, gap), open });
+    }
+  }
+  return out;
+}
 function findGaps() {
   const g = [], cuts = computeCuts(S.plan);
   for (const f of S.plan.floors) {
@@ -1226,8 +1246,14 @@ function findGaps() {
       if (!r.photos.length) g.push({ lvl: "warn", room: r.id, t: `Add photos of the ${r.name}`, s: f.name });
       else if (!isOut(r) && st.covered < st.total) { const miss = es.filter(e => e.len >= 0.6 && !r.photos.some(p => p.wall === e.i)).map(e => names[e.i]); g.push({ lvl: "warn", room: r.id, t: `${r.name}: no photo of ${miss.join(", ")}`, s: r.photos.some(p => p.wall == null) ? "Some photos aren't tagged to a wall yet" : f.name }); }
       if (!st.measured) g.push({ lvl: "warn", room: r.id, t: `${r.name}: size is a guess`, s: "Measure one wall in each direction, or use Measure on a photo" });
-      const hasDoor = (cuts[r.id] || []).some(l => l.some(c => c.type === "door"));
+      const hasDoor = (cuts[r.id] || []).some(l => l.some(c => c.type === "door" || c.type === "open"));
       if (!hasDoor && !isOut(r)) g.push({ lvl: "info", room: r.id, t: `${r.name} has no door`, s: "Add one if it isn't open-plan" });
+    }
+    const seen = new Set();
+    for (const r of rs) for (const nb of neighbourWalls(r)) {
+      const key = [r.id, nb.room.id].sort().join();
+      if (nb.gap > S.plan.wallT * 1.6 && !seen.has(key)) { seen.add(key); g.push({ lvl: "info", room: r.id, t: `${r.name} and ${nb.room.name} are ${fmtLen(nb.gap)} apart`, s: "Drag one against the other if they should touch. It snaps into place." }); }
+      if (nb.gap <= S.plan.wallT * 1.6 && Math.abs(nb.len - nb.lenB) > 0.15 && nb.shared > Math.min(nb.len, nb.lenB) - 0.15 && !seen.has(key + "L")) { seen.add(key + "L"); g.push({ lvl: "info", room: r.id, t: `${r.name}'s wall against ${nb.room.name} is ${fmtLen(nb.len)}, but theirs is ${fmtLen(nb.lenB)}`, s: "If they're the same wall, use Estimate with Claude to line them up, or type the right length" }); }
     }
     for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
       const a = rs[i], b = rs[j], A = bbox(a.pts), B = bbox(b.pts);
@@ -1584,6 +1610,9 @@ async function estimateRoom(roomId, mode = {}) {
 ${isOut(room) ? "Outdoor area (garden, patio or similar)" : "Room"}: "${room.name}" on the ${floorOf(room).name}. Seen from above with north at the top, its outline is a right-angled polygon. Walls in clockwise order:
 ${es.map((e, i) => `- wall ${i}: ${names[i]}, currently ${e.len.toFixed(2)} m (${room.measured[i] ? "MEASURED with a tape, treat as correct" : "rough guess"})`).join("\n")}
 Ceiling height: currently ${roomH(room).toFixed(2)} m (${room.height ? "set by the user" : "default guess"}).
+${(() => { const nbs = neighbourWalls(room); return nbs.length ? `The user has arranged the rooms on the plan by hand, so treat how they fit together as reliable. Neighbouring rooms against this one:
+${nbs.map(n => `- wall ${n.wall} (${names[n.wall]}) ${n.gap > S.plan.wallT * 1.6 ? `faces ${n.room.name}'s wall ${n.gap.toFixed(2)} m away` : `backs onto ${n.room.name}`}${n.open ? " as an open side with no wall between them" : ""}; that wall of ${n.room.name} is ${n.lenB.toFixed(2)} m (${n.measuredB ? "MEASURED" : "a guess"}) and ${n.shared.toFixed(2)} m of it lines up with this wall.`).join("\n")}
+Where a wall is shared with a neighbour along its whole length, its length should normally match the neighbour's wall: use the neighbour's length when that is measured, otherwise reconcile the two from the photos, and say which you used in "basis".` : ""; })()}
 Existing doors and windows: ${room.openings.length ? room.openings.map(o => `${o.type} on wall ${o.edge}, ${o.offset.toFixed(2)} m from the wall's start, ${o.width.toFixed(2)} m wide`).join("; ") : "none recorded"}.
 Photos, in order: ${ordered.slice(0, blobs.length).map((p, i) => `photo ${i + 1} ${p.wall != null ? `shows wall ${p.wall} (${names[p.wall]})` : "wall not tagged"}`).join("; ")}.
 Use measured lengths first, then common objects of standard size as scale references (interior doors about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high, light switches about 1.2 m from the floor, sockets about 0.3 m, floor tiles and boards of standard sizes). Estimate the length of each wall you can see well, the ceiling height, and the doors and windows you can see. ${u}
