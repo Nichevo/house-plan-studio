@@ -425,6 +425,7 @@ svg.facmove{cursor:move}
     </div>
     <div class="layers" id="layersPop" hidden>
       <label data-only="2d"><input type="checkbox" data-ly="dims"> All wall lengths</label>
+      <label data-only="2d"><input type="checkbox" data-ly="other"> <span id="otherLbl">The other floor, see-through</span></label>
       <label data-only="3d"><input type="checkbox" data-ly="labels"> Room labels</label>
       <label><input type="checkbox" data-ly="app"> Appliances</label>
       <label><input type="checkbox" data-ly="furn"> Furniture</label>
@@ -716,7 +717,7 @@ function blankPlan() {
     floors: [{ id: "f0", name: "Ground floor", height: 2.5, slab: 0.25 }, { id: "f1", name: "Upstairs", height: 2.4, slab: 0.25 }], rooms: [] };
 }
 const S = { plan: null, floor: "f0", sel: null, selItem: null, view: "2d", tab: "rooms", undo: [], k: 50, tx: 40, ty: 40, canWrite: true, pendingConfirm: null,
-  layers: (() => { const d = { dims: false, labels: true, app: true, furn: true, garden: true, photos: false, site: true, facades: true }; try { return { ...d, ...JSON.parse(localStorage.getItem("house-layers") || "{}") }; } catch { return d; } })() };
+  layers: (() => { const d = { dims: false, labels: true, app: true, furn: true, garden: true, photos: false, site: true, facades: true, other: false }; try { return { ...d, ...JSON.parse(localStorage.getItem("house-layers") || "{}") }; } catch { return d; } })() };
 const localPhotoURL = {}; // photo id -> object URL (photos kept on this device)
 
 function validPlan(p) { return p && Array.isArray(p.rooms) && Array.isArray(p.floors) && p.floors.length; }
@@ -850,7 +851,7 @@ function planMarkup(fid, o) {
   const k = o.k, fs = 12 / k, t = S.plan.wallT, out = [];
   let rooms = roomsOn(fid);
   const others = S.plan.floors.filter(f => f.id !== fid);
-  if (o.ghost) {
+  if (o.ghost && !S.layers.other) {
     const idx = S.plan.floors.findIndex(f => f.id === fid), nb = S.plan.floors[idx - 1] || S.plan.floors[idx + 1];
     if (nb) for (const r of roomsOn(nb.id)) out.push(`<polygon class="ghost" points="${r.pts.join(" ")}" stroke-width="${1.2 / k}" stroke-dasharray="${5 / k} ${4 / k}"/>`);
   }
@@ -988,7 +989,7 @@ function renderPlan() {
     return `<g transform="translate(${st.x} ${st.y}) rotate(${st.rot})" pointer-events="none">${clip}<image href="${esc(photoURL(st))}" x="${-W / 2}" y="${-H / 2}" width="${W}" height="${H}" opacity="${st.opacity}" preserveAspectRatio="none"${c ? ` clip-path="url(#sc-${st.id})"` : ""}/></g>`;
   }).join("");
   svg.classList.toggle("aligning", !!S.siteAlign);
-  const marks = outlineMarkup(k) + (S.siteStraight || []).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="${6 / k}" fill="#ff3b30" stroke="#fff" stroke-width="${2 / k}" pointer-events="none"/>`).join("");
+  const marks = otherFloorMarkup(k) + outlineMarkup(k) + (S.siteStraight || []).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="${6 / k}" fill="#ff3b30" stroke="#fff" stroke-width="${2 / k}" pointer-events="none"/>`).join("");
   svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${under ? `${under}<g class="gridover" pointer-events="none">${grid}</g>` : grid}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims, keyWalls: S.tab === "totals" && !S.siteAlign ? keyWalls(S.floor) : null })}${marks}</g>`;
 }
 function fit(fid) {
@@ -1616,6 +1617,7 @@ function renderTop() {
   $("#bar3d").hidden = S.view !== "3d";
   document.querySelectorAll("#layersPop [data-only]").forEach(el => el.hidden = el.dataset.only !== S.view);
   document.querySelectorAll("#layersPop [data-ly]").forEach(el => el.checked = !!S.layers[el.dataset.ly]);
+  { const of = otherFloor(), l = $("#otherLbl"); if (l) { l.textContent = of ? `${of.name}, see-through` : "The other floor, see-through"; l.parentElement.hidden = !of || S.view !== "2d"; } }
   $("#emptyFloor").hidden = S.view !== "2d" || !S.canWrite || roomsOn(S.floor).length > 0;
   $("#v2d").setAttribute("aria-pressed", S.view === "2d"); $("#v3d").setAttribute("aria-pressed", S.view === "3d"); $("#vside").setAttribute("aria-pressed", S.view === "side");
 }
@@ -2820,6 +2822,14 @@ function startSiteAlign(id) {
 function endSiteAlign() { S.siteStraight = null; straightNote(); S.siteAlign = null; $("#siteBar").hidden = true; $("#addBar").hidden = false; renderAll(); }
 $("#siteBtn").onclick = openSite;
 $("#siteDone").onclick = endSiteAlign;
+/* the floor below (or, on the ground floor, the one above) drawn see-through over this one, to line rooms up */
+const otherFloor = () => { const i = S.plan.floors.findIndex(f => f.id === S.floor); return S.plan.floors[i - 1] || S.plan.floors[i + 1] || null; };
+function otherFloorMarkup(k) {
+  const of = otherFloor(); if (!S.layers.other || !of) return "";
+  const fs = 11 / k, T = extT(), t = S.plan.wallT;
+  return `<g pointer-events="none" class="otherfl">${roomsOn(of.id).filter(r => !isOut(r)).map(r => { const c = centroid(r.pts);
+    return `<polygon points="${r.pts.join(" ")}" fill="#3B6FB6" fill-opacity=".10" stroke="#3B6FB6" stroke-opacity=".9" stroke-width="${2 / k}" stroke-dasharray="${6 / k} ${3 / k}"/><text x="${c[0]}" y="${c[1]}" dy="${2.2 * fs}" font-size="${fs}" text-anchor="middle" fill="#2D5A99" stroke="var(--paper)" stroke-width="${3 / k}" paint-order="stroke" font-style="italic">${esc(r.name)} (${esc(of.name)})</text>`; }).join("")}${(() => { const ol = outlineOf(of.id); return ol ? `<polygon points="${ol.join(" ")}" fill="none" stroke="#3B6FB6" stroke-width="${1.2 / k}" stroke-dasharray="${2 / k} ${3 / k}"/>` : ""; })()}</g>`;
+}
 /* ---------- house outline traced on the site photo (outside face of the walls), one per floor ---------- */
 const outlineOf = fid => { const o = S.plan.outlines && S.plan.outlines[fid]; return Array.isArray(o) && o.length >= 3 ? o : null; };
 function outlineMarkup(k) {
