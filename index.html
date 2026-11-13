@@ -189,6 +189,11 @@ h3{font:600 16px/1.25 var(--f-label);margin:0;text-wrap:balance}
 .ph .missing{aspect-ratio:4/3;display:grid;place-items:center;font-size:11px;color:var(--muted);padding:6px;text-align:center}
 .ph select{border:0;border-top:1px solid var(--line);background:var(--panel);font-size:12px;padding:4px}
 .ph .acts{display:flex;border-top:1px solid var(--line)}
+.ph{position:relative}
+.phsel{position:absolute;top:4px;left:4px;background:var(--panel);border-radius:6px;padding:3px 4px;display:flex;line-height:0;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+.phsel input{width:18px;height:18px;margin:0}
+.selbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--accent-soft);border-radius:8px;padding:8px 10px}
+.selbar select{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:5px 8px;font:500 13px var(--f-label)}
 .ph .acts button{flex:1;border:0;background:var(--panel);font:500 11px var(--f-label);padding:5px 2px;color:var(--ink)}
 .ph .acts button+button{border-left:1px solid var(--line)}
 .drop{border:1.5px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--muted);font-size:13px;display:flex;flex-direction:column;gap:6px;align-items:center}
@@ -1093,7 +1098,8 @@ function renderRoom() {
   </div>
   <div class="sec">
     <div class="row"><h2 class="grow" style="margin:0">Photos · ${r.photos.length}</h2>${store.sample ? `<button class="btn small" id="rebuildBtn" ${r.photos.length && !ro ? "" : "disabled"}>Rebuild from photos</button><button class="btn small primary" id="aiBtn" ${r.photos.length && !ro ? "" : "disabled"}>Estimate with Claude</button>` : ""}</div>
-    ${r.photos.length ? `<div class="photos">${r.photos.map(p => { const u = photoURL(p); return `<div class="ph" data-ph="${p.id}">
+    ${r.photos.length && !ro ? `<p class="note" style="margin:0">Tick photos to move them to another room, or to build a new area from them.</p><div id="phSelBar"></div>` : ""}
+    ${r.photos.length ? `<div class="photos">${r.photos.map(p => { const u = photoURL(p); return `<div class="ph" data-ph="${p.id}">${ro ? "" : `<label class="phsel"><input type="checkbox" data-psel="${p.id}" aria-label="Select photo"></label>`}
         ${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-measure="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
         <select data-tag="${p.id}" aria-label="Wall shown" ${ro ? "disabled" : ""}>${wallOpts(p.wall)}</select>
         <div class="acts"><button data-measure="${p.id}" ${u ? "" : "disabled"}>Measure</button>${ro ? "" : `<button data-phdel="${p.id}">Delete</button>`}</div></div>`; }).join("")}</div>` : ""}
@@ -1166,6 +1172,30 @@ function bindRoom(r) {
       try { if (p.asset && store.assets) await store.assets.delete(p.asset); else await idb.del(p.id); } catch { }
     };
   }));
+  // picking photos to move to another room or to build a new area from
+  const picked = new Set();
+  const selBar = () => {
+    const bar = pane.querySelector("#phSelBar"); if (!bar) return;
+    if (!picked.size) { bar.innerHTML = ""; return; }
+    const others = S.plan.rooms.filter(x => x.id !== id);
+    bar.innerHTML = `<div class="selbar"><b>${picked.size} selected</b>
+      ${others.length ? `<select id="phMoveTo"><option value="">Move to…</option>${others.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("")}</select>` : ""}
+      ${store.sample ? `<button class="btn small primary" id="phNewArea">Build a new area from these</button>` : ""}
+      <button class="btn small" id="phSelAll">${picked.size === R().photos.length ? "Select none" : "Select all"}</button></div>`;
+    const mv = bar.querySelector("#phMoveTo");
+    if (mv) mv.onchange = () => {
+      const to = S.plan.rooms.find(x => x.id === mv.value); if (!to) return;
+      const n = picked.size;
+      edit(() => { const rr = R(), moving = rr.photos.filter(p => picked.has(p.id)); rr.photos = rr.photos.filter(p => !picked.has(p.id)); to.photos.push(...moving.map(p => ({ ...p, wall: null }))); });
+      toast(`Moved ${n} photo${n > 1 ? "s" : ""} to ${to.name}.`);
+    };
+    const na = bar.querySelector("#phNewArea"); if (na) na.onclick = () => openNewArea(id, [...picked]);
+    bar.querySelector("#phSelAll").onclick = () => {
+      const all = picked.size !== R().photos.length; picked.clear(); if (all) R().photos.forEach(p => picked.add(p.id));
+      pane.querySelectorAll("[data-psel]").forEach(el => el.checked = picked.has(el.dataset.psel)); selBar();
+    };
+  };
+  pane.querySelectorAll("[data-psel]").forEach(el => el.addEventListener("change", () => { if (el.checked) picked.add(el.dataset.psel); else picked.delete(el.dataset.psel); selBar(); }));
   on("#addPhotos", "click", () => { const inp = $("#photoInput"); inp.dataset.room = id; inp.value = ""; inp.click(); });
   const drop = pane.querySelector("#drop");
   if (drop) {
@@ -2014,6 +2044,33 @@ function openRebuild(roomId) {
       const b = bbox(res.room.pts);
       toast(`Rebuilt as ${res.room.name}: ${fmtLen(b.w)} × ${fmtLen(b.h)}${res.used && res.used < res.total ? `, from ${res.used} of ${res.total} photos` : ""}.${res.warn ? " " + res.warn : ""}`, 6000);
     } catch (e) { S.plan.rooms.splice(idx, 0, old); status.textContent = (e && e.message) || "Something went wrong. Try again."; go.disabled = false; }
+  };
+}
+/* build a new area (or room) from some of an existing room's photos; the photos move to the new area */
+function openNewArea(fromId, photoIds) {
+  const src = S.plan.rooms.find(r => r.id === fromId); if (!src || !S.canWrite) return;
+  const chosen = src.photos.filter(p => photoIds.includes(p.id)); if (!chosen.length) return;
+  const m = modal(`Build a new area from ${chosen.length} photo${chosen.length > 1 ? "s" : ""}`, `
+    <p style="margin:0">Claude draws a new area from these photos, and they move out of ${esc(src.name)} into it. You can undo afterwards.</p>
+    <div class="grid2">
+      <label class="field">Name (optional)<input id="naName" placeholder="e.g. Kitchen"></label>
+      <label class="field">Wall in the first photo is (optional)<input class="num" id="naKnown" value="${chosen[0].len ? esc(fmtIn(chosen[0].len)) : ""}" placeholder="${S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.80"}"></label>
+      <label class="field" style="flex-direction:row;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="naZone" checked> One area of an open-plan space</label>
+      <label class="field" style="flex-direction:row;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="naOut"> This is outdoors</label>
+    </div>
+    <div class="row"><button class="btn primary" id="naGo">Build the area</button><span class="grow"></span><span class="note" id="naStatus"></span></div>`);
+  m.el.querySelector("#naGo").onclick = async () => {
+    const go = m.el.querySelector("#naGo"), status = m.el.querySelector("#naStatus"); go.disabled = true;
+    const known = parseLen(m.el.querySelector("#naKnown").value), before = JSON.stringify(S.plan), keep = src.photos.slice();
+    const photos = chosen.map(p => ({ ...p, wall: null }));
+    if (known && known > 0.3) photos[0].len = known; else delete photos[0].len;
+    src.photos = src.photos.filter(p => !photoIds.includes(p.id));
+    try {
+      const res = await buildRoomFromPhotos([], { photos, name: m.el.querySelector("#naName").value.trim(), zone: m.el.querySelector("#naZone").checked, outdoor: m.el.querySelector("#naOut").checked, floor: src.floor, before }, t => status.textContent = t);
+      m.close();
+      const b = bbox(res.room.pts);
+      toast(`Added ${res.room.name}: ${fmtLen(b.w)} × ${fmtLen(b.h)}${res.placedNext ? `, next to ${res.placedNext}` : ""}.${res.warn ? " " + res.warn : ""}`, 6000);
+    } catch (e) { src.photos = keep; status.textContent = (e && e.message) || "Something went wrong. Try again."; go.disabled = false; }
   };
 }
 async function buildRoomFromPhotos(files, opt, progress) {
