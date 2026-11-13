@@ -621,6 +621,7 @@ const store = { db: null, assets: null, downloads: null, sample: null, user: nul
 function setSync(state, text) { const el = $("#sync"); el.dataset.s = state; el.lastElementChild.textContent = text; }
 function scheduleSave() {
   lsSet(LS_KEY, JSON.stringify(S.plan));
+  if (window.dbxChanged) window.dbxChanged();
   clearTimeout(store.timer);
   if (store.db && S.canWrite) { setSync("busy", "Saving…"); store.timer = setTimeout(flushSave, 700); }
   else setSync("local", "Saved on this device");
@@ -2751,7 +2752,13 @@ function openSettings() {
     ${STANDALONE ? `<div class="sec"><h2>Building rooms from photos</h2>
       <label class="field">Anthropic API key<input id="sKey" type="password" autocomplete="off" placeholder="sk-ant-..." value="${esc(window.HOUSE_KEY ? window.HOUSE_KEY.get() : "")}"></label>
       <p class="note">Needed only for "Room from photos" and "Estimate with Claude". Get a key at console.anthropic.com. It's kept in this browser on this device and sent only to Anthropic. Each room costs a few cents.</p>
-      <div class="row"><button class="btn" id="sKeySave">Save key</button><button class="btn" id="sKeyClear">Remove key</button><span class="note" id="sKeyMsg"></span></div></div>` : ""}
+      <div class="row"><button class="btn" id="sKeySave">Save key</button><button class="btn" id="sKeyClear">Remove key</button><span class="note" id="sKeyMsg"></span></div></div>
+    <div class="sec"><h2>Dropbox sync</h2>
+      ${DBX.on() ? `<p class="note" style="margin:0">Connected. The plan and photos save to Apps › your Dropbox app folder about 15 seconds after each change, and the newest plan loads when you open the app. Connect each of your devices with the same App key.</p>
+        <div class="row"><button class="btn primary" id="dbxNow">Sync now</button><button class="btn" id="dbxOff">Disconnect</button></div>`
+      : `<label class="field">Dropbox App key<input id="dbxKey" autocomplete="off" placeholder="from dropbox.com/developers/apps" value="${esc(DBX.key())}"></label>
+        <p class="note" style="margin:0">Keeps this plan in sync between your phone, iPad and PC through your Dropbox. Make a Dropbox app (Scoped access, App folder, with files.content.read and files.content.write), add <code>${esc(DBX.redirect())}</code> as a Redirect URI, then paste its App key here.</p>
+        <div class="row"><button class="btn primary" id="dbxConnect">Connect Dropbox</button></div>`}</div>` : ""}
     ${ro ? "" : `<div class="sec"><h2>Start over</h2><div class="confirm" id="resetWrap"><button class="btn danger" id="resetBtn">Start a blank house</button></div></div>`}`);
   const el = m.el;
   el.querySelector("#sUnits").onchange = e => { S.plan.units = e.target.value; if (S.canWrite) commit(); else renderAll(); m.close(); openSettings(); };
@@ -2759,6 +2766,9 @@ function openSettings() {
     const setKey = v => { window.HOUSE_KEY.set(v); store.sample = window.HOUSE_CAPS("sample"); el.querySelector("#sKeyMsg").textContent = v ? "Saved" : "Removed"; renderAll(); };
     el.querySelector("#sKeySave").onclick = () => { const v = el.querySelector("#sKey").value.trim(); if (v && !/^sk-ant-/.test(v)) { el.querySelector("#sKeyMsg").textContent = "That doesn't look like an Anthropic key (they start with sk-ant-)."; return; } setKey(v); };
     el.querySelector("#sKeyClear").onclick = () => { el.querySelector("#sKey").value = ""; setKey(""); };
+    const dc = el.querySelector("#dbxConnect"); if (dc) dc.onclick = () => { const k = el.querySelector("#dbxKey").value.trim(); if (!/^[a-z0-9]{8,30}$/i.test(k)) { toast("Paste the App key from your Dropbox app's Settings page."); return; } dbxConnect(k); };
+    const dn = el.querySelector("#dbxNow"); if (dn) dn.onclick = () => { m.close(); lsSet("house-dbx-dirty", DBX.dirty() ? "1" : "0"); dbxSync(); };
+    const df = el.querySelector("#dbxOff"); if (df) df.onclick = () => { dbxDisconnect(); m.close(); toast("Dropbox disconnected. Your plan stays on this device."); };
   }
   if (ro) return;
   el.querySelector("#sName").onchange = e => edit(() => S.plan.name = e.target.value.trim() || "My house");
@@ -2981,6 +2991,117 @@ document.addEventListener("keydown", e => {
 new ResizeObserver(() => renderPlan()).observe(svg);
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => { if (S.view === "3d") rebuild3D(); });
 
+/* ---------- Dropbox sync (installed app): plan in /project.json, each photo once in /photos/<id>.jpg, inside the app's own Dropbox folder ---------- */
+const DBX = {
+  key: () => lsGet("house-dbx-key") || "", refresh: () => lsGet("house-dbx-refresh") || "", rev: () => lsGet("house-dbx-rev") || "",
+  dirty: () => lsGet("house-dbx-dirty") === "1", token: null, exp: 0, timer: 0, busy: false, have: null,
+  redirect: () => location.origin + location.pathname,
+  on() { return STANDALONE && !!this.key() && !!this.refresh(); },
+};
+const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+async function dbxConnect(key) {
+  lsSet("house-dbx-key", key);
+  const v = b64url(crypto.getRandomValues(new Uint8Array(48))), ch = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v)));
+  lsSet("house-dbx-verifier", v);
+  location.href = `https://www.dropbox.com/oauth2/authorize?client_id=${encodeURIComponent(key)}&response_type=code&code_challenge=${ch}&code_challenge_method=S256&token_access_type=offline&redirect_uri=${encodeURIComponent(DBX.redirect())}`;
+}
+async function dbxFinishConnect() {
+  const q = new URLSearchParams(location.search), code = q.get("code"), v = lsGet("house-dbx-verifier");
+  if (!code || !v || !DBX.key()) return false;
+  history.replaceState(null, "", DBX.redirect());
+  try {
+    const r = await fetch("https://api.dropboxapi.com/oauth2/token", { method: "POST", body: new URLSearchParams({ code, grant_type: "authorization_code", code_verifier: v, client_id: DBX.key(), redirect_uri: DBX.redirect() }) });
+    const j = await r.json(); if (!r.ok || !j.refresh_token) throw new Error(j.error_description || "Dropbox didn't accept the sign-in.");
+    lsSet("house-dbx-refresh", j.refresh_token); DBX.token = j.access_token; DBX.exp = Date.now() + (j.expires_in - 60) * 1000;
+    try { localStorage.removeItem("house-dbx-verifier"); localStorage.removeItem("house-dbx-rev"); } catch { }
+    lsSet("house-dbx-dirty", "1");
+    toast("Dropbox connected."); return true;
+  } catch (e) { toast((e && e.message) || "Dropbox sign-in failed.", 6000); return false; }
+}
+function dbxDisconnect() { for (const k of ["house-dbx-refresh", "house-dbx-rev", "house-dbx-dirty"]) try { localStorage.removeItem(k); } catch { } DBX.token = null; DBX.have = null; setSync("local", "Saved on this device"); }
+async function dbxToken() {
+  if (DBX.token && Date.now() < DBX.exp) return DBX.token;
+  const r = await fetch("https://api.dropboxapi.com/oauth2/token", { method: "POST", body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: DBX.refresh(), client_id: DBX.key() }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { if (r.status === 400 || r.status === 401) { dbxDisconnect(); throw new Error("Dropbox signed out. Connect again in Settings."); } throw new Error("Dropbox can't be reached."); }
+  DBX.token = j.access_token; DBX.exp = Date.now() + (j.expires_in - 60) * 1000; return DBX.token;
+}
+async function dbxRpc(path, body) {
+  const r = await fetch("https://api.dropboxapi.com/2/" + path, { method: "POST", headers: { Authorization: "Bearer " + await dbxToken(), "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (r.status === 409) return null; if (!r.ok) throw new Error("Dropbox error " + r.status); return r.json();
+}
+async function dbxUpload(path, blob, mode) {
+  const r = await fetch("https://content.dropboxapi.com/2/files/upload", { method: "POST", headers: { Authorization: "Bearer " + await dbxToken(), "Content-Type": "application/octet-stream", "Dropbox-API-Arg": JSON.stringify({ path, mode: mode || "overwrite", mute: true }) }, body: blob });
+  if (r.status === 409) return null; if (!r.ok) throw new Error("Dropbox upload failed (" + r.status + ")"); return r.json();
+}
+async function dbxDownload(path) {
+  const r = await fetch("https://content.dropboxapi.com/2/files/download", { method: "POST", headers: { Authorization: "Bearer " + await dbxToken(), "Dropbox-API-Arg": JSON.stringify({ path }) } });
+  if (r.status === 409) return null; if (!r.ok) throw new Error("Dropbox download failed (" + r.status + ")"); return r.blob();
+}
+async function dbxPhotoNames() {
+  if (DBX.have) return DBX.have;
+  const have = new Set(); let res = await dbxRpc("files/list_folder", { path: "/photos" });
+  while (res) { res.entries.forEach(e => have.add(e.name)); res = res.has_more ? await dbxRpc("files/list_folder/continue", { cursor: res.cursor }) : null; }
+  return DBX.have = have;
+}
+const planPhotos = p => [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.sites) ? p.sites : []), ...Object.values(p.facades || {})];
+async function dbxPush(force) {
+  const meta = await dbxRpc("files/get_metadata", { path: "/project.json" });
+  if (meta && meta.rev !== DBX.rev() && !force) return dbxConflict(meta);
+  const have = await dbxPhotoNames(), ph = planPhotos(S.plan).filter(x => !have.has(x.id + ".jpg"));
+  for (let i = 0; i < ph.length; i++) { setSync("busy", `Dropbox: photo ${i + 1} of ${ph.length}…`); try { const b = await photoBlob(ph[i]); await dbxUpload(`/photos/${ph[i].id}.jpg`, b); have.add(ph[i].id + ".jpg"); } catch { } }
+  setSync("busy", "Saving to Dropbox…");
+  const out = await dbxUpload("/project.json", new Blob([JSON.stringify(S.plan)], { type: "application/json" }), "overwrite");
+  lsSet("house-dbx-rev", out.rev); lsSet("house-dbx-dirty", "0");
+  setSync("ok", "Saved to Dropbox");
+}
+async function dbxPull(meta) {
+  setSync("busy", "Loading from Dropbox…");
+  const blob = await dbxDownload("/project.json"); if (!blob) return;
+  const p = JSON.parse(await blob.text()); if (!validPlan(p)) throw new Error("The plan in Dropbox couldn't be read.");
+  const ph = planPhotos(p);
+  for (let i = 0; i < ph.length; i++) {
+    const x = ph[i]; if (await idb.get(x.id).catch(() => null)) { x.local = true; delete x.asset; continue; }
+    setSync("busy", `Dropbox: photo ${i + 1} of ${ph.length}…`);
+    const b = await dbxDownload(`/photos/${x.id}.jpg`).catch(() => null);
+    if (b) { await idb.put(x.id, b); if (localPhotoURL[x.id]) URL.revokeObjectURL(localPhotoURL[x.id]); localPhotoURL[x.id] = URL.createObjectURL(b); x.local = true; delete x.asset; }
+  }
+  const before = JSON.stringify(S.plan); S.plan = migrate(p); S.plan.example = false; S.sel = null; fixFloor();
+  pushUndo(before); lsSet(LS_KEY, JSON.stringify(S.plan));
+  lsSet("house-dbx-rev", (meta && meta.rev) || ""); lsSet("house-dbx-dirty", "0");
+  renderAll(); loadLocalPhotos(); setSync("ok", "Up to date with Dropbox");
+  toast("Loaded the latest plan from Dropbox. Undo goes back.");
+}
+function dbxConflict(meta) {
+  return new Promise(res => {
+    const when = new Date(meta.server_modified).toLocaleString();
+    const m = modal("Dropbox has a newer plan", `<p style="margin:0">The plan in Dropbox was changed on another device (${esc(when)}), and this device has changes too. Which one do you want to keep?</p>
+      <div class="row"><button class="btn primary" id="dcRemote">Use the Dropbox plan</button><button class="btn" id="dcLocal">Keep this device's plan</button></div>
+      <p class="note" style="margin:0">Using the Dropbox plan replaces this one (Undo can bring it back). Keeping this device's plan overwrites the one in Dropbox.</p>`);
+    m.el.querySelector("#dcRemote").onclick = async () => { m.close(); try { await dbxPull(meta); } catch (e) { toast(e.message); } res(); };
+    m.el.querySelector("#dcLocal").onclick = async () => { m.close(); try { await dbxPush(true); } catch (e) { toast(e.message); } res(); };
+  });
+}
+// check Dropbox: pull if it changed and this device has nothing new, push if this device has changes
+async function dbxSync() {
+  if (!DBX.on() || DBX.busy || !navigator.onLine) return;
+  DBX.busy = true;
+  try {
+    const meta = await dbxRpc("files/get_metadata", { path: "/project.json" });
+    const remoteChanged = meta && meta.rev !== DBX.rev();
+    if (remoteChanged && (!DBX.dirty() || S.plan.example)) await dbxPull(meta);
+    else if (remoteChanged && DBX.dirty()) await dbxConflict(meta);
+    else if (DBX.dirty() && !S.plan.example) await dbxPush(false);
+    else setSync("ok", "Up to date with Dropbox");
+  } catch (e) { setSync("local", "Dropbox not synced, saved on this device"); if (e && /signed out/.test(e.message)) toast(e.message, 6000); }
+  finally { DBX.busy = false; }
+}
+window.dbxChanged = () => { if (!DBX.on()) return; lsSet("house-dbx-dirty", "1"); clearTimeout(DBX.timer); setSync("busy", "Changes waiting for Dropbox"); DBX.timer = setTimeout(dbxSync, 15000); };
+if (STANDALONE) {
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") dbxSync(); else if (DBX.dirty()) { clearTimeout(DBX.timer); dbxSync(); } });
+  window.addEventListener("online", () => dbxSync());
+  (async () => { await dbxFinishConnect(); dbxSync(); })();
+}
 (function boot() {
   let p = null; try { p = JSON.parse(lsGet(LS_KEY) || "null"); } catch { }
   S.plan = validPlan(p) ? migrate(p) : examplePlan();
