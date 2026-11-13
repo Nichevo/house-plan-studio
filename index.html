@@ -800,7 +800,7 @@ const idb = {
   async del(k) { const d = await this.open(); return new Promise(res => { const t = d.transaction("p", "readwrite"); t.objectStore("p").delete(k); t.oncomplete = res; t.onerror = res; }); }
 };
 async function loadLocalPhotos() {
-  for (const r of S.plan.rooms) for (const p of r.photos) {
+  for (const p of [...S.plan.rooms.flatMap(r => r.photos), ...(S.plan.spare || [])]) {
     if (p.asset || localPhotoURL[p.id] !== undefined) continue;
     localPhotoURL[p.id] = null;
     try { const b = await idb.get(p.id); if (b) { localPhotoURL[p.id] = URL.createObjectURL(b); } } catch { }
@@ -1204,8 +1204,30 @@ function renderRooms() {
     }
     parts.push(`</div>`);
   }
+  const sp = S.plan.spare || [];
+  if (sp.length) {
+    const opts = S.plan.rooms.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("");
+    parts.push(`<div class="sec"><h2>Spare photos · ${sp.length}</h2><p class="note" style="margin:0 0 6px">Photos kept aside, not in any room. Move one into a room when you know where it belongs.</p><div class="photos">${sp.map(p => { const u = photoURL(p); return `<div class="ph" data-sp="${p.id}">${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-spview="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
+      ${S.canWrite ? `<select data-spmove="${p.id}" aria-label="Move to a room"><option value="">Move to…</option>${opts}</select><div class="acts"><button data-spdel="${p.id}">Delete</button></div>` : ""}${p.from ? `<small class="muted" style="padding:2px 6px;font-size:11px">From ${esc(p.from)}</small>` : ""}</div>`; }).join("")}</div><div id="spConfirm"></div></div>`);
+  }
   parts.push(`<p class="note">Walls counts how many walls have a photo tagged to them. Measured means at least one wall in each direction has a real measurement.</p>`);
   pane.innerHTML = parts.join("");
+  pane.querySelectorAll("[data-spmove]").forEach(el => el.onchange = () => {
+    const to = S.plan.rooms.find(x => x.id === el.value); if (!to) return;
+    edit(() => { const p = S.plan.spare.find(x => x.id === el.dataset.spmove); if (!p) return; S.plan.spare = S.plan.spare.filter(x => x !== p); const { from, ...ph } = p; to.photos.push({ ...ph, wall: null }); });
+    toast(`Moved to ${to.name}. Tag which wall it shows on the Room tab.`);
+  });
+  pane.querySelectorAll("[data-spview]").forEach(im => im.onclick = () => { const p = S.plan.spare.find(x => x.id === im.dataset.spview), u = p && photoURL(p); if (u) modal(p.from ? `Spare photo from ${p.from}` : "Spare photo", `<div class="viewer"><img src="${esc(u)}" alt="${esc(p.name)}"></div>`); });
+  pane.querySelectorAll("[data-spdel]").forEach(bt => bt.onclick = () => {
+    const box = pane.querySelector("#spConfirm");
+    box.innerHTML = `<div class="confirm"><span>Delete this photo for good?</span><button class="btn small danger" id="spYes">Delete photo</button><button class="btn small" id="spNo">Keep it</button></div>`;
+    box.querySelector("#spNo").onclick = () => box.innerHTML = "";
+    box.querySelector("#spYes").onclick = async () => {
+      const p = S.plan.spare.find(x => x.id === bt.dataset.spdel); if (!p) return;
+      edit(() => { S.plan.spare = S.plan.spare.filter(x => x !== p); }); S.undo.pop();
+      try { if (p.asset && store.assets) await store.assets.delete(p.asset); else await idb.del(p.id); } catch { }
+    };
+  });
 }
 function renderRoom() {
   const r = selRoom();
@@ -1286,7 +1308,7 @@ function renderRoom() {
     ${r.photos.length ? `<div class="photos">${r.photos.map(p => { const u = photoURL(p); return `<div class="ph" data-ph="${p.id}">${ro ? "" : `<label class="phsel"><input type="checkbox" data-psel="${p.id}" aria-label="Select photo"></label>`}
         ${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-measure="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
         <select data-tag="${p.id}" aria-label="Wall shown" ${ro ? "disabled" : ""}>${wallOpts(p.wall)}</select>
-        <div class="acts"><button data-measure="${p.id}" ${u ? "" : "disabled"}>Measure</button>${ro ? "" : `<button data-phdel="${p.id}">Delete</button>`}</div></div>`; }).join("")}</div>` : ""}
+        <div class="acts"><button data-measure="${p.id}" ${u ? "" : "disabled"}>Measure</button>${ro ? "" : `<button data-phdel="${p.id}">Remove</button>`}</div></div>`; }).join("")}</div>` : ""}
     ${ro ? "" : `<div class="drop" id="drop"><span>Take or choose photos of this room. One per wall, shot straight on, works best.</span><button class="btn" id="addPhotos">Add photos</button></div>`}
     <div id="phConfirm"></div>
     ${store.assets ? "" : `<p class="note">Photos are kept in this browser on this device.</p>`}
@@ -1355,8 +1377,9 @@ function bindRoom(r) {
   pane.querySelectorAll("[data-measure]").forEach(el => el.addEventListener("click", () => openMeasure(id, el.dataset.measure)));
   pane.querySelectorAll("[data-phdel]").forEach(b => b.addEventListener("click", () => {
     const box = pane.querySelector("#phConfirm");
-    box.innerHTML = `<div class="confirm"><span>Delete this photo for good?</span><button class="btn small danger" id="phYes">Delete photo</button><button class="btn small" id="phNo">Keep it</button></div>`;
+    box.innerHTML = `<div class="confirm"><span>Take this photo off the room?</span><button class="btn small primary" id="phSpare">Move to spare photos</button><button class="btn small danger" id="phYes">Delete for good</button><button class="btn small" id="phNo">Cancel</button></div>`;
     box.querySelector("#phNo").onclick = () => box.innerHTML = "";
+    box.querySelector("#phSpare").onclick = () => { edit(() => { const rr = R(), p = rr.photos.find(x => x.id === b.dataset.phdel); if (!p) return; rr.photos = rr.photos.filter(x => x.id !== p.id); (S.plan.spare ||= []).push({ ...p, wall: null, from: rr.name }); }); toast("Moved to Spare photos, on the Rooms tab."); };
     box.querySelector("#phYes").onclick = async () => {
       const rr = R(), p = rr.photos.find(x => x.id === b.dataset.phdel); if (!p) return;
       edit(() => { rr.photos = rr.photos.filter(x => x.id !== p.id); });
@@ -1371,13 +1394,14 @@ function bindRoom(r) {
     if (!picked.size) { bar.innerHTML = ""; return; }
     const others = S.plan.rooms.filter(x => x.id !== id);
     bar.innerHTML = `<div class="selbar"><b>${picked.size} selected</b>
-      ${others.length ? `<select id="phMoveTo"><option value="">Move to…</option>${others.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("")}</select>` : ""}
+      ${`<select id="phMoveTo"><option value="">Move to…</option><option value="__spare">Spare photos (not in a room)</option>${others.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("")}</select>`}
       ${AI() ? `<button class="btn small primary" id="phNewArea">Build a new area from these</button>` : ""}
       <button class="btn small" id="phSelAll">${picked.size === R().photos.length ? "Select none" : "Select all"}</button></div>`;
     const mv = bar.querySelector("#phMoveTo");
     if (mv) mv.onchange = () => {
-      const to = S.plan.rooms.find(x => x.id === mv.value); if (!to) return;
       const n = picked.size;
+      if (mv.value === "__spare") { edit(() => { const rr = R(), moving = rr.photos.filter(p => picked.has(p.id)); rr.photos = rr.photos.filter(p => !picked.has(p.id)); (S.plan.spare ||= []).push(...moving.map(p => ({ ...p, wall: null, from: rr.name }))); }); toast(`Put ${n} photo${n > 1 ? "s" : ""} in Spare photos, on the Rooms tab.`); return; }
+      const to = S.plan.rooms.find(x => x.id === mv.value); if (!to) return;
       edit(() => { const rr = R(), moving = rr.photos.filter(p => picked.has(p.id)); rr.photos = rr.photos.filter(p => !picked.has(p.id)); to.photos.push(...moving.map(p => ({ ...p, wall: null }))); });
       toast(`Moved ${n} photo${n > 1 ? "s" : ""} to ${to.name}.`);
     };
@@ -1415,7 +1439,7 @@ function bindRoom(r) {
     const w = pane.querySelector("#delWrap");
     w.innerHTML = `<span>Delete ${esc(R().name)}?</span><button class="btn danger" id="delYes">Delete</button><button class="btn" id="delNo">Cancel</button>`;
     w.querySelector("#delNo").onclick = renderPane;
-    w.querySelector("#delYes").onclick = () => { edit(() => { S.plan.rooms = S.plan.rooms.filter(x => x.id !== id); S.sel = null; S.tab = "rooms"; }); toast("Room deleted. Undo brings it back."); };
+    w.querySelector("#delYes").onclick = () => { const gone = R(), n = gone.photos.length; edit(() => { S.plan.rooms = S.plan.rooms.filter(x => x.id !== id); if (n) (S.plan.spare ||= []).push(...gone.photos.map(p => ({ ...p, wall: null, from: gone.name }))); S.sel = null; S.tab = "rooms"; }); toast(n ? `Room deleted. Its ${n} photo${n > 1 ? "s are" : " is"} kept in Spare photos. Undo brings the room back.` : "Room deleted. Undo brings it back.", 5000); };
   });
 }
 $("#photoInput").addEventListener("change", e => { const r = S.plan.rooms.find(x => x.id === e.target.dataset.room); if (r) addPhotos(r, e.target.files); });
@@ -3210,7 +3234,7 @@ async function exportProjectZip() {
   if (!window.JSZip) { toast("The zip tool couldn't load. Check your connection and reload."); return; }
   const zip = new JSZip(), n = slug(S.plan.name); let missing = 0;
   zip.file("project.json", JSON.stringify(S.plan, null, 1));
-  for (const p of [...S.plan.rooms.flatMap(r => r.photos), ...(S.plan.sites || []), ...Object.values(S.plan.facades || {})]) {
+  for (const p of [...S.plan.rooms.flatMap(r => r.photos), ...(S.plan.spare || []), ...(S.plan.sites || []), ...Object.values(S.plan.facades || {})]) {
     try { zip.file(`photos/${p.id}.jpg`, await photoBlob(p)); } catch { missing++; }
   }
   setSync("busy", "Packing project…");
@@ -3223,7 +3247,7 @@ async function readProjectFile(f) {
     if (!window.JSZip) throw 0;
     const zip = await JSZip.loadAsync(f), pj = zip.file("project.json"); if (!pj) throw 0;
     const p = JSON.parse(await pj.async("string")); if (!validPlan(p)) throw 0;
-    const all = [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.sites) ? p.sites : []), ...(p.facades && typeof p.facades === "object" ? Object.values(p.facades) : [])];
+    const all = [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.spare) ? p.spare : []), ...(Array.isArray(p.sites) ? p.sites : []), ...(p.facades && typeof p.facades === "object" ? Object.values(p.facades) : [])];
     let i = 0, total = all.length;
     for (const ph of all) {
       const zf = zip.file(`photos/${ph.id}.jpg`); if (!zf) continue;
@@ -3346,7 +3370,7 @@ async function dbxPhotoNames() {
   while (res) { res.entries.forEach(e => have.add(e.name)); res = res.has_more ? await dbxRpc("files/list_folder/continue", { cursor: res.cursor }) : null; }
   return DBX.have = have;
 }
-const planPhotos = p => [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.sites) ? p.sites : []), ...Object.values(p.facades || {})];
+const planPhotos = p => [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.spare) ? p.spare : []), ...(Array.isArray(p.sites) ? p.sites : []), ...Object.values(p.facades || {})];
 async function dbxPush(force) {
   const meta = await dbxRpc("files/get_metadata", { path: "/project.json" });
   if (meta && meta.rev !== DBX.rev() && !force) return dbxConflict(meta);
