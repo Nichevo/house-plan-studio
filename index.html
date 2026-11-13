@@ -388,6 +388,7 @@ body.capturing{overflow:hidden}
       <button class="btn" id="zin" aria-label="Zoom in">+</button>
       <button class="btn" id="zout" aria-label="Zoom out">−</button>
       <button class="btn" id="zfit">Fit</button>
+      <button class="btn" id="zroom" hidden>Room</button>
     </div>
     <div class="layers" id="layersPop" hidden>
       <label data-only="2d"><input type="checkbox" data-ly="dims"> All wall lengths</label>
@@ -875,6 +876,7 @@ function planMarkup(fid, o) {
   return out.join("");
 }
 function renderPlan() {
+  { const zr = document.getElementById("zroom"); if (zr) zr.hidden = !S.sel; }
   if (S.view !== "2d") return;
   const W = svg.clientWidth || 800, H = svg.clientHeight || 600, k = S.k;
   const x0 = -S.tx / k, y0 = -S.ty / k, x1 = x0 + W / k, y1 = y0 + H / k;
@@ -884,7 +886,7 @@ function renderPlan() {
   for (let x = Math.floor(x0 / minor) * minor; x <= x1; x += minor) { const mj = Math.abs(x / major - Math.round(x / major)) < 1e-6; lines.push(`<line class="${mj ? "gmajor" : "gminor"}" x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke-width="${1 / k}"/>`); }
   for (let y = Math.floor(y0 / minor) * minor; y <= y1; y += minor) { const mj = Math.abs(y / major - Math.round(y / major)) < 1e-6; lines.push(`<line class="${mj ? "gmajor" : "gminor"}" x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke-width="${1 / k}"/>`); }
   grid = lines.join("");
-  const under = (S.plan.sites || []).filter(st => st.floor === S.floor && (S.siteAlign === st.id || (S.layers.site && !st.hidden)) && photoURL(st)).map(st => {
+  const under = (S.plan.sites || []).filter(st => (st.floor === "all" || st.floor === S.floor) && (S.siteAlign === st.id || (S.layers.site && !st.hidden)) && photoURL(st)).map(st => {
     const W = st.w * st.mpp, H = st.h * st.mpp, c = st.crop, clip = c ? `<clipPath id="sc-${st.id}"><rect x="${-W / 2 + c[0] * W}" y="${-H / 2 + c[1] * H}" width="${(c[2] - c[0]) * W}" height="${(c[3] - c[1]) * H}"/></clipPath>` : "";
     return `<g transform="translate(${st.x} ${st.y}) rotate(${st.rot})" pointer-events="none">${clip}<image href="${esc(photoURL(st))}" x="${-W / 2}" y="${-H / 2}" width="${W}" height="${H}" opacity="${st.opacity}" preserveAspectRatio="none"${c ? ` clip-path="url(#sc-${st.id})"` : ""}/></g>`;
   }).join("");
@@ -942,7 +944,7 @@ svg.addEventListener("pointermove", e => {
   pointers.set(e.pointerId, [e.clientX, e.clientY]);
   if (pinch && pointers.size >= 2) {
     const [a, b] = [...pointers.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-    const rc = svg.getBoundingClientRect(), nk = Math.max(6, Math.min(400, pinch.k * d / pinch.d));
+    const rc = svg.getBoundingClientRect(), nk = Math.max(2, Math.min(400, pinch.k * d / pinch.d));
     const wx = (pinch.m[0] - rc.left - pinch.tx) / pinch.k, wy = (pinch.m[1] - rc.top - pinch.ty) / pinch.k;
     S.k = nk; S.tx = m[0] - rc.left - wx * nk; S.ty = m[1] - rc.top - wy * nk; renderPlan(); return;
   }
@@ -1003,11 +1005,11 @@ svg.addEventListener("pointerup", endPointer);
 svg.addEventListener("pointercancel", endPointer);
 svg.addEventListener("wheel", e => {
   e.preventDefault();
-  const rc = svg.getBoundingClientRect(), f = Math.exp(-e.deltaY * 0.0015), nk = Math.max(6, Math.min(400, S.k * f));
+  const rc = svg.getBoundingClientRect(), f = Math.exp(-e.deltaY * 0.0015), nk = Math.max(2, Math.min(400, S.k * f));
   const wx = (e.clientX - rc.left - S.tx) / S.k, wy = (e.clientY - rc.top - S.ty) / S.k;
   S.k = nk; S.tx = e.clientX - rc.left - wx * nk; S.ty = e.clientY - rc.top - wy * nk; renderPlan();
 }, { passive: false });
-function zoomBy(f) { const W = svg.clientWidth, H = svg.clientHeight, wx = (W / 2 - S.tx) / S.k, wy = (H / 2 - S.ty) / S.k; S.k = Math.max(6, Math.min(400, S.k * f)); S.tx = W / 2 - wx * S.k; S.ty = H / 2 - wy * S.k; renderPlan(); }
+function zoomBy(f) { const W = svg.clientWidth, H = svg.clientHeight, wx = (W / 2 - S.tx) / S.k, wy = (H / 2 - S.ty) / S.k; S.k = Math.max(2, Math.min(400, S.k * f)); S.tx = W / 2 - wx * S.k; S.ty = H / 2 - wy * S.k; renderPlan(); }
 function clampOpening(r, o) { const e = edges(r)[o.edge]; if (!e) { o.edge = 0; return; } if (o.type === "open") { o.offset = 0; o.width = r2(e.len); return; } o.width = Math.min(o.width, Math.max(0.2, e.len - 0.1)); o.offset = Math.max(0.05, Math.min(o.offset, e.len - o.width - 0.05)); }
 
 function addRoom(shape, kind) {
@@ -1137,7 +1139,10 @@ function renderRoom() {
     <div id="phConfirm"></div>
     ${store.assets ? "" : `<p class="note">Photos are kept in this browser on this device.</p>`}
   </div>
-  ${ro ? "" : `<div class="sec"><div class="row"><button class="btn" id="rotRoom">Rotate 90°</button><button class="btn" id="flipRoom">Flip</button><button class="btn" id="dupRoom">Duplicate room</button><span class="confirm" id="delWrap"><button class="btn danger" id="delRoom">Delete room</button></span></div></div>`}`;
+  ${ro ? "" : `<div class="sec"><div class="row"><button class="btn" id="rotRoom">Rotate 90°</button><button class="btn" id="flipRoom">Flip</button><button class="btn" id="dupRoom">Duplicate room</button><span class="confirm" id="delWrap"><button class="btn danger" id="delRoom">Delete room</button></span></div></div>
+  <div class="sec"><h4 style="margin:0 0 6px">Resize to fit</h4><p class="note" style="margin:0 0 6px">Shrink or grow the whole room evenly, keeping its shape, to fit the house outline. Measured walls stay locked, so set those lengths instead.</p>
+    <div class="row"><button class="btn small" data-rsz="0.95">−5%</button><button class="btn small" data-rsz="0.99">−1%</button><button class="btn small" data-rsz="1.01">+1%</button><button class="btn small" data-rsz="1.05">+5%</button>
+    <label class="row" style="gap:4px;font-size:13px"><input type="checkbox" id="rszAll"> Whole floor</label></div></div>`}`;
   bindRoom(r);
 }
 function bindRoom(r) {
@@ -1237,6 +1242,15 @@ function bindRoom(r) {
   on("#rebuildBtn", "click", () => openRebuild(id));
   on("#rotRoom", "click", () => edit(() => rotateRoom(R())));
   on("#flipRoom", "click", () => edit(() => flipRoom(R())));
+  pane.querySelectorAll("[data-rsz]").forEach(b => b.onclick = () => {
+    const all = pane.querySelector("#rszAll").checked, r = R(), list = all ? roomsOn(r.floor) : [r];
+    const locked = list.filter(x => Object.values(x.measured || {}).some(Boolean));
+    if (locked.length) { toast(`${locked.map(x => x.name).join(", ")} ${locked.length > 1 ? "have" : "has"} measured walls, so ${locked.length > 1 ? "they stay" : "it stays"} the same size.`, 5000); }
+    const go = list.filter(x => !locked.includes(x)); if (!go.length) return;
+    rszAllKeep = all;
+    edit(() => scaleRooms(go, +b.dataset.rsz));
+  });
+  if (pane.querySelector("#rszAll")) pane.querySelector("#rszAll").checked = rszAllKeep;
   on("#dupRoom", "click", () => edit(() => { const c = clone(R()); c.id = uid(); c.name += " copy"; c.photos = []; c.pts = c.pts.map(p => [p[0] + 0.5, p[1] + 0.5]); c.openings.forEach(o => o.id = uid()); (c.items || []).forEach(o => o.id = uid()); S.plan.rooms.push(c); S.sel = c.id; }));
   on("#delRoom", "click", () => {
     const w = pane.querySelector("#delWrap");
@@ -1765,6 +1779,18 @@ function flipRoom(room) {
   (room.items || []).forEach(it => { const L = old[it.wall] ? old[it.wall].len : 0; it.wall = map(it.wall); it.along = r2(Math.max(0, L - it.along - it.w)); });
   const m = {}; Object.keys(room.measured).forEach(k => { if (room.measured[k]) m[map(+k)] = true; }); room.measured = m;
 }
+let rszAllKeep = false;
+/* scale rooms evenly about their combined centre; doors and items keep their size and slide along with their walls */
+function scaleRooms(list, f) {
+  const b = bbox(list.flatMap(r => r.pts)), cx = b.x0 + b.w / 2, cy = b.y0 + b.h / 2;
+  for (const r of list) {
+    const old = edges(r), pts = r.pts.map(([x, y]) => [r2(cx + (x - cx) * f), r2(cy + (y - cy) * f)]);
+    if (edges({ pts }).some(e => e.len < 0.3)) continue;
+    r.pts = pts;
+    r.openings.forEach(o => { if (o.type !== "open") o.offset = r2(o.offset * f); clampOpening(r, o); });
+    (r.items || []).forEach(it => { it.along = r2(it.along * f); clampItem(r, it); });
+  }
+}
 function translateRoom(room, dx, dy) { room.pts = room.pts.map(([x, y]) => [r2(x + dx), r2(y + dy)]); }
 function overlapArea(a, b) {
   const A = bbox(a.pts), B = bbox(b.pts), x0 = Math.max(A.x0, B.x0), x1 = Math.min(A.x1, B.x1), y0 = Math.max(A.y0, B.y0), y1 = Math.min(A.y1, B.y1);
@@ -2179,16 +2205,18 @@ async function openSite() {
     <p style="margin:0">Lay satellite and map screenshots under the plan to line rooms up against the house outline and draw the garden and boundaries. Add the aerial photo and the boundary map as two separate site photos, scale and line up each one, and use See-through to blend them. Google Maps doesn't show property boundaries; your council's online property map (GIS) does.</p>
     ${list.length ? `<div class="list">${list.map(st => `<div class="op" data-site="${st.id}"><div class="row"><b class="grow">${esc(st.name || "Site photo")}</b>
         <label class="row" style="gap:4px;font-size:13px"><input type="checkbox" data-sshow ${st.hidden ? "" : "checked"}> Show</label></div>
-        <div class="row"><input class="inp" data-sname value="${esc(st.name || "")}" placeholder="Name, e.g. Satellite" style="flex:1;min-width:120px"></div>
+        <div class="row"><input class="inp" data-sname value="${esc(st.name || "")}" placeholder="Name, e.g. Satellite" style="flex:1;min-width:120px">
+          <select class="inp" data-sfloor style="flex:0 0 auto"><option value="all" ${st.floor === "all" ? "selected" : ""}>All floors</option>${S.plan.floors.map(f => `<option value="${f.id}" ${st.floor === f.id ? "selected" : ""}>${esc(f.name)} only</option>`).join("")}</select></div>
+        <label class="row" style="gap:8px;font-size:13px">See-through<input type="range" data-sop min="0.1" max="1" step="0.05" value="${st.opacity}" style="flex:1"></label>
         <div class="row"><button class="btn small primary" data-salign>Line it up</button><button class="btn small" data-sscale>Set the scale</button><button class="btn small" data-scrop>Crop</button><button class="btn small danger" data-sdel>Remove</button></div></div>`).join("")}</div>` : ""}
     <div class="drop"><span>${list.length ? "Add another, such as the map with boundary lines." : "Take a screenshot with the map's scale bar showing, or include a wall of the house you've measured."}</span><button class="btn ${list.length ? "" : "primary"}" id="sNew">${list.length ? "Add another screenshot" : "Choose a screenshot"}</button></div>
-    <p class="note" style="margin:0">Site photos show on the ${esc(S.plan.floors[0].name)} in the 2D plan only. They stay on this device${store.assets ? " with the plan" : ""} and are left out of exports. Turn them all off under Show.</p>`);
+    <p class="note" style="margin:0">Site photos show in the 2D plan only. They stay on this device${store.assets ? " with the plan" : ""} and are left out of exports. Turn them all off at once under Show.</p>`);
   const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
   inp.onchange = async () => {
     const f = inp.files[0]; if (!f) return;
     try {
       const { blob, w, h } = await downscale(f, 3000, 0.88);
-      const ns = { id: uid(), name: list.length ? (list.length === 1 ? "Map" : `Site photo ${list.length + 1}`) : "Satellite", w, h, mpp: 0.1, x: 0, y: 0, rot: 0, opacity: list.length ? 0.5 : 0.6, floor: S.plan.floors[0].id };
+      const ns = { id: uid(), name: list.length ? (list.length === 1 ? "Map" : `Site photo ${list.length + 1}`) : "Satellite", w, h, mpp: 0.1, x: 0, y: 0, rot: 0, opacity: list.length ? 0.5 : 0.6, floor: "all" };
       if (store.assets) { const up = await store.assets.upload(blob, { type: "image/jpeg" }); ns.asset = up.id; }
       else { await idb.put(ns.id, blob); localPhotoURL[ns.id] = URL.createObjectURL(blob); ns.local = true; }
       m.close();
@@ -2199,6 +2227,9 @@ async function openSite() {
   m.el.querySelectorAll("[data-site]").forEach(box => {
     const id = box.dataset.site, st = () => sites().find(x => x.id === id);
     box.querySelector("[data-sshow]").onchange = e => edit(() => { st().hidden = !e.target.checked; });
+    box.querySelector("[data-sfloor]").onchange = e => edit(() => { st().floor = e.target.value; });
+    box.querySelector("[data-sop]").oninput = e => { st().opacity = +e.target.value; renderPlan(); };
+    box.querySelector("[data-sop]").onchange = () => commit();
     box.querySelector("[data-sname]").onchange = e => edit(() => { st().name = e.target.value.trim().slice(0, 30); });
     box.querySelector("[data-salign]").onclick = () => { m.close(); startSiteAlign(id); };
     box.querySelector("[data-sscale]").onclick = () => { m.close(); calibrateSite(clone(st()), st()); };
@@ -2284,7 +2315,7 @@ function calibrateSite(ns, old) {
     const L = parseLen(m.el.querySelector("#calLen").value), px = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) * ns.w / img.naturalWidth;
     ns.mpp = L / px;
     if (!old) { // new photo: start it over the last site photo, or the middle of this floor's rooms
-      const prev = sites()[sites().length - 1], rs = roomsOn(ns.floor), b = rs.length ? bbox(rs.flatMap(r => r.pts)) : null;
+      const prev = sites()[sites().length - 1], rs = roomsOn(ns.floor === "all" ? S.floor : ns.floor), b = rs.length ? bbox(rs.flatMap(r => r.pts)) : null;
       if (prev) { ns.x = prev.x; ns.y = prev.y; ns.rot = prev.rot; } else { ns.x = b ? r2(b.x0 + b.w / 2) : 0; ns.y = b ? r2(b.y0 + b.h / 2) : 0; }
     }
     m.close();
@@ -2349,7 +2380,7 @@ function cropSite(id, thenAlign) {
 function startSiteAlign(id) {
   const st = sites().find(x => x.id === id); if (!st) return;
   if (S.view !== "2d") $("#v2d").click();
-  if (S.floor !== st.floor) { S.floor = st.floor; renderAll(); }
+  if (st.floor !== "all" && S.floor !== st.floor) { S.floor = st.floor; renderAll(); }
   S.siteAlign = id; S.sel = null; if (st.hidden) st.hidden = false;
   const bar = $("#siteBar"); bar.hidden = false; $("#addBar").hidden = true;
   bar.querySelector("b").textContent = `Line up: ${st.name || "site photo"}`;
@@ -2703,7 +2734,8 @@ document.querySelectorAll("#layersPop [data-ly]").forEach(el => el.addEventListe
   renderPlan(); if (S.view === "3d") rebuild3D();
 }));
 $("#addGarden").onclick = () => addRoom("rect", "outdoor");
-$("#zin").onclick = () => zoomBy(1.25); $("#zout").onclick = () => zoomBy(0.8); $("#zfit").onclick = () => { fit(S.floor); renderPlan(); };
+$("#zin").onclick = () => zoomBy(1.5); $("#zout").onclick = () => zoomBy(1 / 1.5);
+$("#zroom").onclick = () => { const r = S.plan.rooms.find(x => x.id === S.sel); if (!r) return; const b = bbox(r.pts), W = svg.clientWidth, H = svg.clientHeight, k = Math.max(2, Math.min(400, Math.min(W / (b.w + 3), H / (b.h + 3)))); S.k = k; S.tx = W / 2 - (b.x0 + b.w / 2) * k; S.ty = H / 2 - (b.y0 + b.h / 2) * k; renderPlan(); }; $("#zfit").onclick = () => { fit(S.floor); renderPlan(); };
 $("#undoBtn").onclick = undo;
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); undo(); }
