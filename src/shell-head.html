@@ -50,7 +50,7 @@
     if (name === "sample") {
       if (!HOUSE_KEY.get()) return null;
       var f = async function (p, o) { return { text: await ask(p, o), truncated: false }; };
-      f.limits = async function () { return { maxPromptBytes: 262144, images: { maxCount: 12, maxInputBytes: 30000000, mediaTypes: ["image/jpeg", "image/png", "image/webp"] } }; };
+      f.limits = async function () { return { maxPromptBytes: 262144, images: { maxCount: 20, maxInputBytes: 30000000, mediaTypes: ["image/jpeg", "image/png", "image/webp"] } }; };
       f.json = async function (p, o) {
         var t = await ask(p, o), i = t.indexOf("{"), j = t.lastIndexOf("}");
         try { return JSON.parse(t.slice(i, j + 1)); } catch (e) { throw { code: "invalid_json", text: t }; }
