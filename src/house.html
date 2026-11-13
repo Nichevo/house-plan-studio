@@ -222,6 +222,7 @@ body.capturing{overflow:hidden}
 .caplen{display:flex;gap:8px;align-items:end;flex-wrap:wrap}
 .caplen .field{flex:1;min-width:150px;color:#ccc}
 .caplen input{background:#222;color:#fff;border-color:#444}
+.capopen{display:flex;gap:8px;align-items:center;color:#ccc;width:100%}
 .capwarn{display:flex;gap:10px;align-items:center;background:#3A2D18;border:1px solid #E3A44B;border-radius:8px;padding:8px}
 .capwarn img{width:72px;height:54px;object-fit:cover;border-radius:4px}
 .capwarn b{display:block;font-weight:500;margin-bottom:6px}
@@ -429,8 +430,8 @@ function computeCuts(plan) {
     const eA = edges(A);
     for (const o of A.openings) {
       const e = eA[o.edge]; if (!e) continue;
-      const s = Math.max(0, o.offset), en = Math.min(e.len, o.offset + o.width);
-      const cut = { s, e: en, sill: o.type === "window" ? o.sill : 0, top: (o.type === "window" ? o.sill : 0) + o.height, type: o.type, own: true, o };
+      const isOpen = o.type === "open", s = isOpen ? 0 : Math.max(0, o.offset), en = isOpen ? e.len : Math.min(e.len, o.offset + o.width);
+      const cut = { s, e: en, sill: o.type === "window" ? o.sill : 0, top: isOpen ? 1000 : (o.type === "window" ? o.sill : 0) + o.height, type: o.type, own: true, o };
       map[A.id][o.edge].push(cut);
       const P0 = [e.a[0] + e.d[0] * s, e.a[1] + e.d[1] * s], P1 = [e.a[0] + e.d[0] * en, e.a[1] + e.d[1] * en];
       for (const B of plan.rooms) {
@@ -450,7 +451,7 @@ function computeCuts(plan) {
 function roomStats(room, cuts) {
   if (isOut(room)) { const a = area(room.pts); return { area: a, perim: perim(room), h: 0, wallGross: 0, wallNet: 0, vol: 0 }; }
   const h = roomH(room), a = area(room.pts), p = perim(room);
-  let open = 0; (cuts[room.id] || []).forEach(list => list.forEach(c => open += (c.e - c.s) * (c.top - c.sill)));
+  let open = 0; (cuts[room.id] || []).forEach(list => list.forEach(c => open += (c.e - c.s) * Math.max(0, Math.min(c.top, h) - c.sill)));
   return { area: a, perim: p, h, wallGross: p * h, wallNet: Math.max(0, p * h - open), vol: a * h };
 }
 
@@ -501,6 +502,8 @@ function parseItems(list, nWalls) {
 const ITEM_PROMPT = `Also list the appliances, large furniture and garden features you can see, so they can be drawn on the plan. Allowed types: ${Object.keys(ITEMS).join(", ")}. For each give the wall (or side) it stands against, offset_m from that wall's start corner going clockwise to the item's near edge, from_wall_m (0 if it stands against the wall), width_m along the wall, depth_m out from the wall, height_m, and a short label such as "American fridge freezer". Leave out small objects and anything you cannot place.`;
 const ITEM_JSON = `"items":[{"type":"fridge","label":"Fridge freezer","wall":1,"offset_m":0.3,"from_wall_m":0,"width_m":0.6,"depth_m":0.65,"height_m":1.85}]`;
 function door(edge, offset, width = 0.82, extra = {}) { return { id: uid(), type: "door", edge, offset, width, height: 2.03, sill: 0, hinge: "start", swing: "in", ...extra }; }
+/* an open side: the whole wall is missing because the area opens straight into the next one (open-plan) */
+function openSide(edge, extra = {}) { return { id: uid(), type: "open", edge, offset: 0, width: 1, height: 0, sill: 0, ...extra }; }
 function win(edge, offset, width = 1.2, extra = {}) { return { id: uid(), type: "window", edge, offset, width, height: 1.2, sill: 0.9, ...extra }; }
 function examplePlan() {
   const g = "f0", u = "f1";
@@ -693,6 +696,12 @@ function planMarkup(fid, o) {
     for (const op of r.openings) {
       const e = es[op.edge]; if (!e) continue;
       const P = s => [e.a[0] + e.d[0] * s, e.a[1] + e.d[1] * s];
+      if (op.type === "open") {
+        const A = P(t * 0.7), B = P(e.len - t * 0.7);
+        out.push(`<line class="gapl" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke-width="${t * 1.35}"/>`);
+        out.push(`<line class="sym" x1="${e.a[0]}" y1="${e.a[1]}" x2="${e.b[0]}" y2="${e.b[1]}" stroke-width="${1 / k}" stroke-dasharray="${2 / k} ${4 / k}"/>`);
+        continue;
+      }
       const A = P(op.offset), B = P(op.offset + op.width);
       out.push(`<line class="gapl" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke-width="${t * 1.35}"/>`);
       if (op.type === "door") {
@@ -890,7 +899,7 @@ svg.addEventListener("wheel", e => {
   S.k = nk; S.tx = e.clientX - rc.left - wx * nk; S.ty = e.clientY - rc.top - wy * nk; renderPlan();
 }, { passive: false });
 function zoomBy(f) { const W = svg.clientWidth, H = svg.clientHeight, wx = (W / 2 - S.tx) / S.k, wy = (H / 2 - S.ty) / S.k; S.k = Math.max(6, Math.min(400, S.k * f)); S.tx = W / 2 - wx * S.k; S.ty = H / 2 - wy * S.k; renderPlan(); }
-function clampOpening(r, o) { const e = edges(r)[o.edge]; if (!e) { o.edge = 0; return; } o.width = Math.min(o.width, Math.max(0.2, e.len - 0.1)); o.offset = Math.max(0.05, Math.min(o.offset, e.len - o.width - 0.05)); }
+function clampOpening(r, o) { const e = edges(r)[o.edge]; if (!e) { o.edge = 0; return; } if (o.type === "open") { o.offset = 0; o.width = r2(e.len); return; } o.width = Math.min(o.width, Math.max(0.2, e.len - 0.1)); o.offset = Math.max(0.05, Math.min(o.offset, e.len - o.width - 0.05)); }
 
 function addRoom(shape, kind) {
   const W = svg.clientWidth || 600, H = svg.clientHeight || 400;
@@ -993,19 +1002,19 @@ function renderRoom() {
   </div>
   <div class="sec" ${out ? "hidden" : ""}>
     <div class="row"><h2 class="grow" style="margin:0">Doors and windows</h2>
-      ${ro ? "" : `<button class="btn small" id="addDoor">+ Door</button><button class="btn small" id="addWin">+ Window</button>`}</div>
+      ${ro ? "" : `<button class="btn small" id="addDoor">+ Door</button><button class="btn small" id="addWin">+ Window</button><button class="btn small" id="addOpen">+ Open side</button>`}</div>
     ${r.openings.length ? r.openings.map(o => `<div class="op" data-op="${o.id}">
-      <div class="row"><b class="grow">${o.type === "door" ? "Door" : "Window"}</b>
+      <div class="row"><b class="grow">${o.type === "door" ? "Door" : o.type === "open" ? `Open side${o.leadsTo ? ` into ${esc(o.leadsTo)}` : ""}` : "Window"}</b>
         <select class="inp" data-of="edge" style="width:auto" ${ro ? "disabled" : ""}>${names.map((n, i) => `<option value="${i}" ${o.edge === i ? "selected" : ""}>${n}</option>`).join("")}</select>
         ${ro ? "" : `<button class="btn small danger" data-opdel="${o.id}">Remove</button>`}</div>
-      <div class="grid3">
+      ${o.type === "open" ? `<p class="note" style="margin:0">No wall on this side. It opens straight into the next area.</p>` : `<div class="grid3">
         <label class="field">From corner<input class="num" data-of="offset" value="${esc(fmtIn(o.offset))}" ${ro ? "disabled" : ""}></label>
         <label class="field">Width<input class="num" data-of="width" value="${esc(fmtIn(o.width))}" ${ro ? "disabled" : ""}></label>
         <label class="field">Height<input class="num" data-of="height" value="${esc(fmtIn(o.height))}" ${ro ? "disabled" : ""}></label>
         ${o.type === "window" ? `<label class="field">Sill height<input class="num" data-of="sill" value="${esc(fmtIn(o.sill))}" ${ro ? "disabled" : ""}></label>` :
       `<label class="field">Hinge<select data-of="hinge" ${ro ? "disabled" : ""}><option value="start" ${o.hinge !== "end" ? "selected" : ""}>Left</option><option value="end" ${o.hinge === "end" ? "selected" : ""}>Right</option></select></label>
            <label class="field">Opens<select data-of="swing" ${ro ? "disabled" : ""}><option value="in" ${o.swing !== "out" ? "selected" : ""}>Into room</option><option value="out" ${o.swing === "out" ? "selected" : ""}>Outward</option></select></label>`}
-      </div></div>`).join("") : `<div class="empty">No doors or windows yet.</div>`}
+      </div>`}</div>`).join("") : `<div class="empty">No doors or windows yet.</div>`}
     <p class="note">A door on a shared wall opens up the neighbouring room's wall too, so add it once.</p>
   </div>
   <div class="sec">
@@ -1055,6 +1064,7 @@ function bindRoom(r) {
   wd("#rW", 0); wd("#rD", 1);
   const hEl = pane.querySelector("#rH"); if (hEl) hEl.addEventListener("change", () => { const v = parseLen(hEl.value); if (v == null || v < 1.5 || v > 8) { toast("Enter a ceiling height between 1.5 m and 8 m."); renderPane(); return; } edit(() => { R().height = v; }); });
   on("#addDoor", "click", () => edit(() => { const rr = R(), e = edges(rr)[0]; const o = door(0, Math.max(0.1, e.len / 2 - 0.41)); clampOpening(rr, o); rr.openings.push(o); }));
+  on("#addOpen", "click", () => edit(() => { const rr = R(), used = new Set(rr.openings.filter(o => o.type === "open").map(o => o.edge)), i = edges(rr).findIndex((_, j) => !used.has(j)); if (i < 0) return; const o = openSide(i); rr.openings = rr.openings.filter(x => x.edge !== i); clampOpening(rr, o); rr.openings.push(o); }));
   on("#addWin", "click", () => edit(() => { const rr = R(), e = edges(rr)[0]; const o = win(0, Math.max(0.1, e.len / 2 - 0.6)); clampOpening(rr, o); rr.openings.push(o); }));
   pane.querySelectorAll("[data-op]").forEach(box => {
     const oid = box.dataset.op;
@@ -1572,8 +1582,9 @@ function placeRoom(r, nb) {
   if (!nb) {
     const fb = bbox(others.flatMap(x => x.pts)); translateRoom(r, fb.x1 - b0.x0 + 0.5, fb.y0 - b0.y0); return null;
   }
-  const recip = nb.openings.find(o => o.type === "door" && sameName(o.leadsTo, r.name));
-  const myDoor = r.openings.find(o => o.type === "door" && sameName(o.leadsTo, nb.name));
+  const link = o => o.type === "door" || o.type === "open";
+  const recip = nb.openings.find(o => link(o) && sameName(o.leadsTo, r.name));
+  const myDoor = r.openings.find(o => link(o) && sameName(o.leadsTo, nb.name));
   const nbEdges = edges(nb).filter(f => f.len >= 0.8 && (Math.abs(f.n[0]) > 0.99 || Math.abs(f.n[1]) > 0.99));
   const sides = recip ? [edges(nb)[recip.edge], ...nbEdges.filter(f => f.i !== recip.edge)] : nbEdges;
   let best = null;
@@ -1595,7 +1606,7 @@ function placeRoom(r, nb) {
       } else along = (f.a[0] - e.b[0]) * f.d[0] + (f.a[1] - e.b[1]) * f.d[1];
       translateRoom(rr, f.n[0] * nShift + f.d[0] * along, f.n[1] * nShift + f.d[1] * along);
       const ov = others.reduce((s, o) => s + overlapArea(rr, o), 0) + (f === sides[0] && recip ? 0 : 0.01) + q * 0.001;
-      if (!best || ov < best.ov) best = { ov, pts: rr.pts, q, rr, dropMine: useDoors };
+      if (!best || ov < best.ov) best = { ov, pts: rr.pts, q, rr, dropMine: useDoors && myDoor.type === "door" };
     }
     if (best && best.ov < 0.05) break;
   }
@@ -1618,6 +1629,7 @@ async function openPhotoRoom(preset) {
       <label class="field">Room name (optional)<input id="prName" placeholder="${store.sample ? "Claude will suggest one" : "e.g. Kitchen"}"></label>
       <label class="field">Next to (optional)<select id="prNext"><option value="">${store.sample ? "Work it out from the doors" : "Place it at the side"}</option>${existing.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join("")}</select></label>
       <label class="field" style="flex-direction:row;gap:8px;align-items:center;align-self:end;color:var(--ink)"><input type="checkbox" id="prOut"> This is outdoors (garden, patio, driveway)</label>
+      <label class="field" style="flex-direction:row;gap:8px;align-items:center;align-self:end;color:var(--ink)"><input type="checkbox" id="prZone" ${pre && pre.zone ? "checked" : ""}> One area of an open-plan space</label>
       <label class="field">Wall in the first photo is (optional)<input class="num" id="prKnown" placeholder="${S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.80"}"></label>
     </div>
     <p class="note">${store.sample ? "Claude looks at the photos to work out the room's shape, size, doors and windows. One tape-measured wall makes the size much more accurate." : (STANDALONE ? "To estimate rooms from photos, add your Anthropic API key in Settings." : "Estimating from photos needs the app to be open in claude.ai.") + " For now the room starts as a 3.5 × 3 m box that you can resize."}</p>
@@ -1634,7 +1646,7 @@ async function openPhotoRoom(preset) {
   };
   inp.onchange = () => setFiles(inp.files);
   m.el.querySelector("#prPick").onclick = () => { inp.value = ""; inp.click(); };
-  m.el.querySelector("#prGuide").onclick = () => { const name = m.el.querySelector("#prName").value.trim(); m.close(); openCapture({ name }); };
+  m.el.querySelector("#prGuide").onclick = () => { const name = m.el.querySelector("#prName").value.trim(), zone = m.el.querySelector("#prZone").checked; m.close(); openCapture({ name, zone }); };
   if (pre) {
     labels = pre.labels || null; measured = pre.measured || []; setFiles(pre.files, true);
     if (pre.name) m.el.querySelector("#prName").value = pre.name;
@@ -1650,11 +1662,11 @@ async function openPhotoRoom(preset) {
     const go = m.el.querySelector("#prGo"), status = m.el.querySelector("#prStatus"); go.disabled = true;
     const known = parseLen(m.el.querySelector("#prKnown").value);
     try {
-      const res = await buildRoomFromPhotos(files, { name: m.el.querySelector("#prName").value.trim(), outdoor: m.el.querySelector("#prOut").checked, nextTo: m.el.querySelector("#prNext").value, known: known && known > 0.3 ? known : null, floor: S.floor, labels, measured: measured.filter(x => x.photo !== 0) }, t => status.textContent = t);
+      const res = await buildRoomFromPhotos(files, { name: m.el.querySelector("#prName").value.trim(), outdoor: m.el.querySelector("#prOut").checked, zone: m.el.querySelector("#prZone").checked, nextTo: m.el.querySelector("#prNext").value, known: known && known > 0.3 ? known : null, floor: S.floor, labels, measured: measured.filter(x => x.photo !== 0) }, t => status.textContent = t);
       status.textContent = "";
       const r = res.room, b = bbox(r.pts), doors = r.openings.filter(o => o.type === "door").length, wins = r.openings.filter(o => o.type === "window").length, nItems = r.items.length;
       m.el.querySelector("#prResult").innerHTML = `<div class="op"><b>Added ${esc(r.name)}: ${fmtLen(b.w)} × ${fmtLen(b.h)}, ${fmtArea(area(r.pts))}</b>
-        <span class="note">${isOut(r) ? "Outdoor area" : `${doors} door${doors === 1 ? "" : "s"}, ${wins} window${wins === 1 ? "" : "s"}`}, ${nItems} appliance${nItems === 1 ? "" : "s"} and other item${nItems === 1 ? "" : "s"}. ${res.placedNext ? `Placed against ${esc(res.placedNext)}${res.shared ? ", sharing its door" : ""}.` : res.first ? "This is the first room on the floor." : "Placed at the side of the plan, so drag it into position."} ${res.ai ? "Sizes are estimates until you measure them." : ""}</span>
+        <span class="note">${isOut(r) ? "Outdoor area" : `${doors} door${doors === 1 ? "" : "s"}, ${wins} window${wins === 1 ? "" : "s"}${r.openings.some(o => o.type === "open") ? `, ${r.openings.filter(o => o.type === "open").length} open side${r.openings.filter(o => o.type === "open").length > 1 ? "s" : ""}` : ""}`}, ${nItems} appliance${nItems === 1 ? "" : "s"} and other item${nItems === 1 ? "" : "s"}. ${res.placedNext ? `Placed against ${esc(res.placedNext)}${res.shared ? ", sharing its door" : ""}.` : res.first ? "This is the first room on the floor." : "Placed at the side of the plan, so drag it into position."} ${res.ai ? "Sizes are estimates until you measure them." : ""}</span>
         ${res.used && res.used < res.total ? `<span class="note">Claude looked at ${res.used} of the ${res.total} photos (walls and doors first). All of them are kept with the room.</span>` : ""}
         ${res.notes ? `<span class="note"><b>Tip from Claude:</b> ${esc(res.notes)}</span>` : ""}
         ${res.warn ? `<span class="note" style="color:var(--warn)">${esc(res.warn)}</span>` : ""}
@@ -1682,7 +1694,7 @@ async function arSupported() {
 async function openCapture(preset) {
   if (!S.canWrite) return;
   if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) DeviceMotionEvent.requestPermission().catch(() => { });
-  const steps = CAP_STEPS.map(s => ({ ...s })), shots = [], lens = {};
+  const steps = CAP_STEPS.map(s => ({ ...s })), shots = [], lens = {}, open = new Set();
   let cur = 0, stream = null, motion = { tilt: null, upright: null, rot: 0 }, pending = null, closed = false;
   const root = document.createElement("div"); root.className = "capture"; root.setAttribute("role", "dialog"); root.setAttribute("aria-label", "Take photos of a room");
   root.innerHTML = `<div class="capview"><video playsinline muted autoplay></video><div class="capgrid" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
@@ -1691,7 +1703,8 @@ async function openCapture(preset) {
     <div class="capside">
       <div class="captop"><h3 id="capTitle"></h3><button class="xbtn" id="capClose" aria-label="Close">×</button></div>
       <p class="captip" id="capTip"></p>
-      <div class="caplen" id="capLen" hidden><label class="field">Length of this wall (optional)<input class="num" id="capLenIn" inputmode="decimal" placeholder="${S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.80"}"></label><button class="btn" id="capAR" hidden>Measure with AR</button></div>
+      <div class="caplen" id="capLen" hidden><label class="field">Length of this wall (optional)<input class="num" id="capLenIn" inputmode="decimal" placeholder="${S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.80"}"></label><button class="btn" id="capAR" hidden>Measure with AR</button>
+        <label class="capopen"><input type="checkbox" id="capOpen"> No wall here: it opens into another area</label></div>
       <div class="capwarn" id="capWarn" hidden></div>
       <div class="capshoot"><button class="btn" id="capPrev">Back</button><button class="shutter" id="capShoot" aria-label="Take photo"></button><button class="btn" id="capNext">Skip</button></div>
       <div class="capsteps" id="capSteps"></div>
@@ -1745,7 +1758,8 @@ async function openCapture(preset) {
   const render = () => {
     const st = steps[cur], n = stepShots(st.k).length;
     q("#capTitle").textContent = `${st.label}${st.multi && n ? ` · ${n} taken` : ""}`;
-    q("#capTip").textContent = st.tip;
+    q("#capTip").textContent = st.wall && open.has(st.k) ? "Stand back and shoot across the opening, so the floor where this area ends shows: a change of flooring, the end of a bench, a beam or a step." : st.tip;
+    if (st.wall) q("#capOpen").checked = open.has(st.k);
     q("#capLen").hidden = !st.wall;
     if (st.wall) q("#capLenIn").value = lens[st.k] ? fmtIn(lens[st.k]) : "";
     q("#capPrev").disabled = cur === 0;
@@ -1793,6 +1807,7 @@ async function openCapture(preset) {
     steps.splice(at, 0, { k: "w" + (nw + 1) + "_" + uid(), label: `Wall ${nw + 1}`, wall: true, tip: "Keep turning right. Whole wall, floor to ceiling." });
     cur = at; clearWarn(); render();
   };
+  q("#capOpen").onchange = e => { const k = steps[cur].k; if (e.target.checked) open.add(k); else open.delete(k); render(); };
   q("#capLenIn").onchange = e => { const v = parseLen(e.target.value), k = steps[cur].k; if (v && v > 0.3 && v < 40) lens[k] = v; else { delete lens[k]; if (e.target.value.trim()) toast("That length wasn't understood."); } };
   q("#capAR").onclick = async () => {
     const k = steps[cur].k; stopCam();
@@ -1809,11 +1824,11 @@ async function openCapture(preset) {
     sorted.forEach((s, i) => {
       const st = steps.find(x => x.k === s.step);
       files.push(new File([s.blob], `${st.label.toLowerCase().replace(/\W+/g, "-")}-${i + 1}.jpg`, { type: "image/jpeg", lastModified: t0 + i }));
-      labels.push(st.wall ? `${st.label.toLowerCase()}, taken straight on` : CAP_LABEL[st.k]);
+      labels.push(st.wall ? (open.has(st.k) ? `${st.label.toLowerCase()}, an open side with no wall that opens into the next area` : `${st.label.toLowerCase()}, taken straight on`) : CAP_LABEL[st.k]);
       if (st.wall && lens[st.k]) measured.push({ photo: i, len: lens[st.k] });
     });
     close();
-    openPhotoRoom({ files, labels, measured, name: preset && preset.name });
+    openPhotoRoom({ files, labels, measured, name: preset && preset.name, zone: open.size > 0 || !!(preset && preset.zone) });
   };
   q("#capDone").onclick = finish;
   render();
@@ -1910,6 +1925,7 @@ function openRebuild(roomId) {
       <label class="field">Room name (optional)<input id="rbName" placeholder="Claude will suggest one"></label>
       <label class="field">Wall in the first photo is (optional)<input class="num" id="rbKnown" value="${old.photos[0] && old.photos[0].len ? esc(fmtIn(old.photos[0].len)) : ""}" placeholder="${S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.80"}"></label>
       <label class="field" style="flex-direction:row;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="rbOut" ${isOut(old) ? "checked" : ""}> This is outdoors</label>
+      <label class="field" style="flex-direction:row;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="rbZone" ${old.openings.some(o => o.type === "open") ? "checked" : ""}> One area of an open-plan space</label>
     </div>
     <div class="row"><button class="btn primary" id="rbGo">Rebuild the room</button><span class="grow"></span><span class="note" id="rbStatus"></span></div>`);
   m.el.querySelector("#rbGo").onclick = async () => {
@@ -1919,7 +1935,7 @@ function openRebuild(roomId) {
     if (photos[0]) { if (known && known > 0.3) photos[0].len = known; else delete photos[0].len; }
     const idx = S.plan.rooms.indexOf(old); S.plan.rooms.splice(idx, 1);
     try {
-      const res = await buildRoomFromPhotos([], { photos, name: m.el.querySelector("#rbName").value.trim(), outdoor: m.el.querySelector("#rbOut").checked, floor: old.floor, before }, t => status.textContent = t);
+      const res = await buildRoomFromPhotos([], { photos, name: m.el.querySelector("#rbName").value.trim(), outdoor: m.el.querySelector("#rbOut").checked, zone: m.el.querySelector("#rbZone").checked, floor: old.floor, before }, t => status.textContent = t);
       m.close();
       const b = bbox(res.room.pts);
       toast(`Rebuilt as ${res.room.name}: ${fmtLen(b.w)} × ${fmtLen(b.h)}${res.used && res.used < res.total ? `, from ${res.used} of ${res.total} photos` : ""}.${res.warn ? " " + res.warn : ""}`, 6000);
@@ -1963,7 +1979,7 @@ Rooms already drawn on this floor: ${existing.length ? existing.map(r => `"${r.n
 ${opt.name ? `The user calls this room "${opt.name}".` : `Suggest a short name for the room, such as Kitchen, Bedroom 2 or Hall, that is not already in the list above.`}
 ${selMeasured.map(x => `The main wall facing the camera in photo ${x.photo + 1} is ${x.len.toFixed(2)} m long, measured with a tape.${x.photo === 0 ? " Use it as the scale." : ""}`).join(" ")}
 ${selLabels && selLabels.some(l => l !== "another view") ? `The user took these with a guide that labels each photo: ${selLabels.map((l, i) => `photo ${i + 1} is ${l}`).join("; ")}. The wall photos go round the room clockwise; the other photos are extra views to help you place doors, windows and items.` : ""}
-If this is an open-plan space that combines several areas (such as entrance, kitchen, dining and living) with no doors between them, treat it all as ONE room: trace its whole outer boundary with as many walls as it needs, and name it after its main uses, such as "Kitchen / Living". Only put a door where there is a doorway in a wall; a wide opening between areas of the same space is not a door. Doors are usually 0.7 to 0.9 m wide.
+${opt.zone || (selLabels && selLabels.some(l => /open side/.test(l))) ? `This is ONE AREA of a larger open-plan space, photographed on its own. Trace only this area. Where a side has no wall because it opens straight into the next area, still count it as a wall in the outline, following where the area ends (a change of flooring, the end of a bench or wall, a beam or a step), and add it to openings as {"type":"open","wall":n,"leads_to":"Living"} naming the area it opens into. Name the room after this area only, such as Kitchen, Dining or Living.` : `If this is an open-plan space that combines several areas (such as entrance, kitchen, dining and living) with no doors between them, treat it all as ONE room: trace its whole outer boundary with as many walls as it needs, and name it after its main uses, such as "Kitchen / Living".`} Only put a door where there is a doorway in a wall; a wide opening between areas of the same space is not a door. Doors are usually 0.7 to 0.9 m wide.
 Work out the room's outline. Walk around the walls clockwise as seen from above, starting at the left end of the main wall facing the camera in photo 1, so wall 0 is that wall. For each wall give its length and whether you turn right ("R", an ordinary corner like in a rectangle) or left ("L", an inward corner like in an L-shaped room) at its end. A rectangular room has 4 walls, all "R". An L-shaped room has 6 walls, five "R" and one "L". Ignore small recesses, chimney breasts and bay windows under 0.4 m deep.
 For scale, use any measured length first, then objects of standard size: interior doors are about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high and 0.60 m deep, light switches about 1.2 m up, sockets about 0.3 m up, beds about 1.9 to 2.0 m long, and floor tiles and boards of standard sizes. Typical ceilings are 2.3 to 2.7 m.
 ${ITEM_PROMPT}
@@ -1992,6 +2008,12 @@ photo_walls lists, for each photo in order, the number of the wall it mainly sho
   const nE = r.pts.length;
   if (est && Array.isArray(est.openings)) {
     for (const o of est.openings) {
+      if (o && o.type === "open" && Number.isInteger(o.wall) && o.wall >= 0 && o.wall < nE) {
+        if (r.openings.some(x => x.type === "open" && x.edge === o.wall)) continue;
+        r.openings = r.openings.filter(x => x.edge !== o.wall);
+        const op = openSide(o.wall); if (o.leads_to) op.leadsTo = String(o.leads_to).slice(0, 40); clampOpening(r, op); r.openings.push(op); continue;
+      }
+      if (o && r.openings.some(x => x.type === "open" && x.edge === o.wall)) continue;
       if (!(o && (o.type === "door" || o.type === "window") && Number.isInteger(o.wall) && o.wall >= 0 && o.wall < nE && o.width_m > 0.2)) continue;
       const op = o.type === "door" ? door(o.wall, (+o.offset_m || 0.2) * f, +o.width_m, { height: +o.height_m || 2.03 }) : win(o.wall, (+o.offset_m || 0.2) * f, +o.width_m, { height: +o.height_m || 1.2, sill: o.sill_m != null ? +o.sill_m : 0.9 });
       if (o.type === "door" && o.leads_to) op.leadsTo = String(o.leads_to).slice(0, 40);
