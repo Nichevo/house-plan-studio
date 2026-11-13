@@ -55,7 +55,14 @@ button{cursor:pointer}
 
 .banner{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding-block:8px;padding-left:var(--gut-l);padding-right:var(--gut-r);background:var(--warn-soft);color:var(--ink);font-size:13px;border-bottom:1px solid var(--line)}
 
-main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 380px}
+main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 10px var(--aw,380px)}
+#grip{cursor:col-resize;background:var(--panel);border-left:1px solid var(--line);touch-action:none;display:flex;align-items:center;justify-content:center}
+#grip::after{content:"";width:3px;height:36px;border-radius:2px;background:var(--line)}
+#grip:hover::after,#grip.on::after{background:var(--accent)}
+body.panel-min main{grid-template-columns:minmax(0,1fr) 0 0}
+body.panel-min aside,body.panel-min #grip{display:none}
+.ov-tr{right:calc(12px + env(safe-area-inset-right,0px));top:12px}
+.tabs .pmin{flex:0 0 auto;padding:10px 10px;font-size:16px;letter-spacing:0}
 #stage{position:relative;min-height:0;overflow:hidden;background:var(--paper);touch-action:none}
 #plan{position:absolute;inset:0;width:100%;height:100%;display:block;user-select:none;-webkit-user-select:none}
 #three{position:absolute;inset:0}
@@ -117,7 +124,8 @@ h3{font:600 16px/1.25 var(--f-label);margin:0;text-wrap:balance}
 .ph .acts{display:flex;border-top:1px solid var(--line)}
 .ph{position:relative}
 .phsel{position:absolute;top:4px;left:4px;background:var(--panel);border-radius:6px;padding:3px 4px;display:flex;line-height:0;box-shadow:0 1px 4px rgba(0,0,0,.25)}
-.phsel input{width:18px;height:18px;margin:0}
+.phsel input{width:22px;height:22px;margin:0}
+.phsel{padding:5px 6px}
 .selbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--accent-soft);border-radius:8px;padding:8px 10px}
 .selbar select{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:5px 8px;font:500 13px var(--f-label)}
 .ph .acts button{flex:1;border:0;background:var(--panel);font:500 11px var(--f-label);padding:5px 2px;color:var(--ink)}
@@ -202,6 +210,10 @@ table.tot tr.sum td{font-weight:600;border-bottom:0}
   main{display:block}
   #stage{height:58vh;height:58svh;min-height:340px}
   aside{border-left:0;border-top:1px solid var(--line);overflow:visible}
+  #grip{display:none}
+  body.panel-min #stage{height:calc(100svh - 130px)}
+  body.panel-min aside{display:block}
+  body.panel-min aside > :not(.tabs){display:none}
   .tabs{top:0}
   .hint{display:none}
 }
@@ -344,12 +356,15 @@ svg.facmove{cursor:move}
       <span class="note" data-only="3d">Photos are shown on the walls they were tagged to.</span>
     </div>
     <div class="hint" id="hint">Drag a room to move it. Select it, then drag a wall to resize or a corner to angle it. Scroll or pinch to zoom, drag empty space to pan.</div>
+    <button class="btn overlay ov-tr" id="panelShow" hidden aria-label="Show the side panel">Panel ‹</button>
   </div>
+  <div id="grip" role="separator" aria-label="Drag to resize the side panel"></div>
   <aside>
     <div class="tabs" role="tablist">
       <button role="tab" id="tabRooms" aria-selected="true">Rooms</button>
       <button role="tab" id="tabRoom" aria-selected="false">Room</button>
       <button role="tab" id="tabTotals" aria-selected="false">Totals &amp; gaps</button>
+      <button class="pmin" id="panelMin" aria-label="Hide the side panel" title="Hide panel">›</button>
     </div>
     <div id="pane" class="pane"></div>
   </aside>
@@ -374,6 +389,9 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const r2 = v => Math.round(v * 1000) / 1000;
 const STANDALONE = typeof window.HOUSE_CAPS === "function"; // installed app: local storage, own API key
 const cap = name => STANDALONE ? Promise.resolve(window.HOUSE_CAPS(name)) : (window.claude && window.claude.use) ? window.claude.use(name).catch(() => null) : Promise.resolve(null);
+/* Claude buttons show in the installed app even before an API key is added, and explain what's missing */
+const AI = () => !!store.sample || STANDALONE;
+function needKey(fn) { if (store.sample) return fn(); toast("Claude needs your Anthropic API key on this device. Paste it into Settings, then try again.", 6000); openSettings(); }
 function toast(msg, ms = 2600) {
   const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
   setTimeout(() => t.remove(), ms);
@@ -1111,7 +1129,7 @@ function renderRoom() {
   </div>
   <div class="sec">
     <div class="row"><h2 class="grow" style="margin:0">${out ? "Things in the garden" : "Appliances and furniture"} · ${r.items.length}</h2>
-      ${store.sample && !ro ? `<button class="btn small" id="aiItems" ${r.photos.length ? "" : "disabled"} title="${r.photos.length ? "" : "Add photos first"}">Find in photos</button>` : ""}</div>
+      ${AI() && !ro ? `<button class="btn small" id="aiItems" ${r.photos.length ? "" : "disabled"} title="${r.photos.length ? "" : "Add photos first"}">Find in photos</button>` : ""}</div>
     ${ro ? "" : `<div class="row"><select class="inp grow" id="itPick" aria-label="Item to add">${presetOpts}</select><button class="btn small" id="itAdd">+ Add</button></div>`}
     ${r.items.map(it => `<div class="op" data-it="${it.id}" ${S.selItem === it.id ? 'style="border-color:var(--accent)"' : ""}>
       <div class="row"><input class="inp grow" data-if="label" value="${esc(it.label)}" aria-label="Name" ${ro ? "disabled" : ""}>
@@ -1146,7 +1164,7 @@ function renderRoom() {
     <p class="note">A door on a shared wall opens up the neighbouring room's wall too, so add it once.</p>
   </div>
   <div class="sec">
-    <div class="row"><h2 class="grow" style="margin:0">Photos · ${r.photos.length}</h2>${store.sample ? `<button class="btn small" id="rebuildBtn" ${r.photos.length && !ro ? "" : "disabled"}>Rebuild from photos</button><button class="btn small primary" id="aiBtn" ${r.photos.length && !ro ? "" : "disabled"}>Estimate with Claude</button>` : ""}</div>
+    <div class="row"><h2 class="grow" style="margin:0">Photos · ${r.photos.length}</h2>${AI() ? `<button class="btn small" id="rebuildBtn" ${r.photos.length && !ro ? "" : "disabled"}>Rebuild from photos</button><button class="btn small primary" id="aiBtn" ${r.photos.length && !ro ? "" : "disabled"}>Estimate with Claude</button>` : ""}</div>
     ${r.photos.length && !ro ? `<p class="note" style="margin:0">Tick photos to move them to another room, or to build a new area from them.</p><div id="phSelBar"></div>` : ""}
     ${r.photos.length ? `<div class="photos">${r.photos.map(p => { const u = photoURL(p); return `<div class="ph" data-ph="${p.id}">${ro ? "" : `<label class="phsel"><input type="checkbox" data-psel="${p.id}" aria-label="Select photo"></label>`}
         ${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-measure="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
@@ -1172,7 +1190,7 @@ function bindRoom(r) {
   on("#rFloor", "change", e => edit(() => { R().floor = e.target.value; S.floor = e.target.value; }));
   on("#rKind", "change", e => edit(() => { R().kind = e.target.value; }));
   on("#itAdd", "click", () => edit(() => { const rr = R(), it = makeItem(pane.querySelector("#itPick").value, 0, 0.2); if (it.type === "stairs") it.h = r2(stairRise(rr)); clampItem(rr, it); rr.items.push(it); S.selItem = it.id; }));
-  on("#aiItems", "click", () => estimateRoom(id, { itemsOnly: true }));
+  on("#aiItems", "click", () => needKey(() => estimateRoom(id, { itemsOnly: true })));
   pane.querySelectorAll("[data-it]").forEach(box => {
     const iid = box.dataset.it;
     box.querySelectorAll("[data-irot]").forEach(b => b.onclick = () => edit(() => { const it = R().items.find(x => x.id === iid); if (it) { it.rot = ((((it.rot || 0) + +b.dataset.irot) % 360) + 540) % 360 - 180; S.selItem = iid; } }));
@@ -1237,7 +1255,7 @@ function bindRoom(r) {
     const others = S.plan.rooms.filter(x => x.id !== id);
     bar.innerHTML = `<div class="selbar"><b>${picked.size} selected</b>
       ${others.length ? `<select id="phMoveTo"><option value="">Move to…</option>${others.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("")}</select>` : ""}
-      ${store.sample ? `<button class="btn small primary" id="phNewArea">Build a new area from these</button>` : ""}
+      ${AI() ? `<button class="btn small primary" id="phNewArea">Build a new area from these</button>` : ""}
       <button class="btn small" id="phSelAll">${picked.size === R().photos.length ? "Select none" : "Select all"}</button></div>`;
     const mv = bar.querySelector("#phMoveTo");
     if (mv) mv.onchange = () => {
@@ -1246,7 +1264,7 @@ function bindRoom(r) {
       edit(() => { const rr = R(), moving = rr.photos.filter(p => picked.has(p.id)); rr.photos = rr.photos.filter(p => !picked.has(p.id)); to.photos.push(...moving.map(p => ({ ...p, wall: null }))); });
       toast(`Moved ${n} photo${n > 1 ? "s" : ""} to ${to.name}.`);
     };
-    const na = bar.querySelector("#phNewArea"); if (na) na.onclick = () => openNewArea(id, [...picked]);
+    const na = bar.querySelector("#phNewArea"); if (na) na.onclick = () => needKey(() => openNewArea(id, [...picked]));
     bar.querySelector("#phSelAll").onclick = () => {
       const all = picked.size !== R().photos.length; picked.clear(); if (all) R().photos.forEach(p => picked.add(p.id));
       pane.querySelectorAll("[data-psel]").forEach(el => el.checked = picked.has(el.dataset.psel)); selBar();
@@ -1260,8 +1278,8 @@ function bindRoom(r) {
     drop.addEventListener("dragleave", () => drop.classList.remove("over"));
     drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); addPhotos(R(), e.dataTransfer.files); });
   }
-  on("#aiBtn", "click", () => estimateRoom(id));
-  on("#rebuildBtn", "click", () => openRebuild(id));
+  on("#aiBtn", "click", () => needKey(() => estimateRoom(id)));
+  on("#rebuildBtn", "click", () => needKey(() => openRebuild(id)));
   on("#rotRoom", "click", () => edit(() => rotateRoom(R())));
   on("#flipRoom", "click", () => edit(() => flipRoom(R())));
   on("#cnAdd", "click", () => { const i = +pane.querySelector("#cnWall").value; edit(() => splitWall(R(), i)); toast("Corner added in the middle of the wall. Drag its handle on the plan."); });
@@ -2988,7 +3006,29 @@ document.addEventListener("keydown", e => {
     const r = selRoom(); edit(() => { S.plan.rooms = S.plan.rooms.filter(x => x !== r); S.sel = null; }); toast(`${r.name} deleted. Undo brings it back.`);
   }
 });
-new ResizeObserver(() => renderPlan()).observe(svg);
+new ResizeObserver(() => { renderPlan(); if (S.view === "3d") size3D(); }).observe(svg);
+/* side panel: hide it, or drag its edge to make it narrower or wider; remembered on this device */
+const narrow = () => matchMedia("(max-width: 860px)").matches;
+function setPanel(min) {
+  document.body.classList.toggle("panel-min", min); lsSet("house-panel-min", min ? "1" : "0");
+  $("#panelShow").hidden = !min || narrow();
+  const b = $("#panelMin"); b.textContent = narrow() ? (min ? "▴" : "▾") : "›"; b.title = b.ariaLabel = min ? "Show the panel" : "Hide the panel";
+  requestAnimationFrame(() => { renderPlan(); if (S.view === "3d") size3D(); });
+}
+$("#panelMin").onclick = () => setPanel(!document.body.classList.contains("panel-min"));
+$("#panelShow").onclick = () => setPanel(false);
+["#tabRooms", "#tabRoom", "#tabTotals"].forEach(id => $(id).addEventListener("click", () => { if (document.body.classList.contains("panel-min")) setPanel(false); }));
+matchMedia("(max-width: 860px)").addEventListener?.("change", () => setPanel(document.body.classList.contains("panel-min")));
+{
+  const w = +lsGet("house-panel-w"); if (w >= 240 && w <= 700) document.documentElement.style.setProperty("--aw", w + "px");
+  const g = $("#grip"); let st = null;
+  g.addEventListener("pointerdown", e => { g.setPointerCapture(e.pointerId); st = { x: e.clientX, w: $("aside").getBoundingClientRect().width }; g.classList.add("on"); });
+  g.addEventListener("pointermove", e => { if (!st) return; const w = Math.round(Math.max(240, Math.min(Math.min(700, innerWidth - 320), st.w - (e.clientX - st.x)))); document.documentElement.style.setProperty("--aw", w + "px"); });
+  const end = () => { if (!st) return; st = null; g.classList.remove("on"); lsSet("house-panel-w", Math.round($("aside").getBoundingClientRect().width)); };
+  g.addEventListener("pointerup", end); g.addEventListener("pointercancel", end);
+  g.addEventListener("dblclick", () => { document.documentElement.style.removeProperty("--aw"); lsSet("house-panel-w", ""); });
+  setPanel(lsGet("house-panel-min") === "1");
+}
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => { if (S.view === "3d") rebuild3D(); });
 
 /* ---------- Dropbox sync (installed app): plan in /project.json, each photo once in /photos/<id>.jpg, inside the app's own Dropbox folder ---------- */
