@@ -219,6 +219,7 @@ table.tot tr.sum td{font-weight:600;border-bottom:0}
 /* plan svg classes */
 #plan .bg{fill:var(--paper)}
 .gminor{stroke:var(--grid)} .gmajor{stroke:var(--grid-major)}
+.gridover .gminor{stroke:rgba(255,255,255,.35)} .gridover .gmajor{stroke:rgba(255,255,255,.75)}
 .room{stroke:none;cursor:move}
 .t0{fill:var(--t0)}.t1{fill:var(--t1)}.t2{fill:var(--t2)}.t3{fill:var(--t3)}.t4{fill:var(--t4)}.t5{fill:var(--t5)}.t6{fill:var(--t6)}
 .wall{fill:none;stroke:var(--wall);stroke-linejoin:miter}
@@ -375,7 +376,8 @@ svg.facmove{cursor:move}
     <div class="sitebar" id="siteBar" hidden>
       <b>Line up the site photo</b>
       <span class="note" style="margin:0">Drag it so the house outline sits on your rooms. Pinch to zoom as usual.</span>
-      <div class="row"><span>Turn</span><button class="btn small" data-srot="-5">−5°</button><button class="btn small" data-srot="-1">−1°</button><button class="btn small" data-srot="1">+1°</button><button class="btn small" data-srot="5">+5°</button></div>
+      <div class="row"><span>Turn</span><button class="btn small" data-srot="-5">−5°</button><button class="btn small" data-srot="-1">−1°</button><button class="btn small" data-srot="-0.25">−¼°</button><button class="btn small" data-srot="0.25">+¼°</button><button class="btn small" data-srot="1">+1°</button><button class="btn small" data-srot="5">+5°</button></div>
+      <div class="row"><button class="btn small" id="siteStraight">Straighten to the grid</button><span class="note" id="siteStraightNote" style="margin:0"></span></div>
       <div class="row"><span>See-through</span><input type="range" id="siteOp" min="0.15" max="1" step="0.05"></div>
       <div class="row"><span class="grow"></span><button class="btn primary" id="siteDone">Done</button></div>
     </div>
@@ -908,7 +910,8 @@ function renderPlan() {
     return `<g transform="translate(${st.x} ${st.y}) rotate(${st.rot})" pointer-events="none">${clip}<image href="${esc(photoURL(st))}" x="${-W / 2}" y="${-H / 2}" width="${W}" height="${H}" opacity="${st.opacity}" preserveAspectRatio="none"${c ? ` clip-path="url(#sc-${st.id})"` : ""}/></g>`;
   }).join("");
   svg.classList.toggle("aligning", !!S.siteAlign);
-  svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${grid}${under}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims, keyWalls: S.tab === "totals" && !S.siteAlign ? keyWalls(S.floor) : null })}</g>`;
+  const marks = (S.siteStraight || []).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="${6 / k}" fill="#ff3b30" stroke="#fff" stroke-width="${2 / k}" pointer-events="none"/>`).join("");
+  svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${under ? `${under}<g class="gridover" pointer-events="none">${grid}</g>` : grid}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims, keyWalls: S.tab === "totals" && !S.siteAlign ? keyWalls(S.floor) : null })}${marks}</g>`;
 }
 function fit(fid) {
   const rooms = fid ? roomsOn(fid) : S.plan.rooms, W = svg.clientWidth || 800, H = svg.clientHeight || 600;
@@ -944,6 +947,15 @@ svg.addEventListener("pointerdown", e => {
       drag = { type: "sroom", id, p0, sc, start: clone(r.pts), before: JSON.stringify(S.plan), moved: false };
     } else drag = { type: "pan", sc, tx: S.tx, ty: S.ty, moved: false };
     return;
+  }
+  if (alignSite() && S.siteStraight) {
+    const st = alignSite(), q = toM(e.clientX, e.clientY); S.siteStraight.push(q); pointers.delete(e.pointerId); drag = null;
+    if (S.siteStraight.length === 2) {
+      const [a, b] = S.siteStraight, ang = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI, target = Math.round(ang / 90) * 90, before = JSON.stringify(S.plan);
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 0.2) { st.rot = Math.round(((((st.rot + target - ang) % 360) + 360) % 360) * 100) / 100; commit(before); toast(`Turned ${(target - ang).toFixed(1)}°. Now drag it into place.`); }
+      S.siteStraight = null;
+    }
+    straightNote(); renderPlan(); return;
   }
   if (alignSite()) { const st = alignSite(); drag = { type: "site", sc: [e.clientX, e.clientY], p0: toM(e.clientX, e.clientY), start: [st.x, st.y], before: JSON.stringify(S.plan), moved: false }; return; }
   const vtxEl = e.target.closest("[data-vtx]");
@@ -2362,7 +2374,8 @@ function calibrateSite(ns, old, opt = {}) {
     <p style="margin:0">${opt.intro || "Mark the two ends of something whose length you know: the map's scale bar, or a wall you've measured."} Pinch or use + to zoom in, drag to move around, and drag a dot to fine-tune it.</p>
     <div class="calwrap"><canvas id="calCv"></canvas><div class="calzoom"><button id="calIn" aria-label="Zoom in">+</button><button id="calOut" aria-label="Zoom out">−</button><button id="calFit" aria-label="Show whole photo" style="font-size:13px">Fit</button></div></div>
     <div class="grid2"><label class="field">Real length between the two points<input class="num" id="calLen" inputmode="decimal" placeholder="${S.plan.units === "ft" ? `e.g. 50'` : "e.g. 20"}"></label><span class="note" id="calPx" style="align-self:end"></span></div>
-    <div class="row"><button class="btn" id="calReset">Start again</button><span class="grow"></span><button class="btn primary" id="calGo" disabled>Next: line it up</button></div>`, true);
+    <div class="row"><button class="btn" id="calReset">Start again</button><span class="grow"></span>${opt.skip ? `<button class="btn" id="calSkip">${esc(opt.skip)}</button>` : ""}<button class="btn primary" id="calGo" disabled>Next: line it up</button></div>`, true);
+  if (opt.skip) m.el.querySelector("#calSkip").onclick = () => { m.close(); opt.onSkip(); };
   const cv = m.el.querySelector("#calCv"), ctx = cv.getContext("2d"), img = new Image(), pts = [];
   const V = { s: 1, x: 0, y: 0 }; // canvas px = image px * s + (x, y)
   const dpr = () => window.devicePixelRatio || 1;
@@ -2556,10 +2569,14 @@ function renderSideBar() {
   const f = facades()[S.side], ax = SIDE[S.side];
   $("#sideTabs").querySelectorAll("[data-side]").forEach(b => { b.setAttribute("aria-pressed", b.dataset.side === S.side); b.textContent = SIDE[b.dataset.side].name + (facades()[b.dataset.side] ? " ✓" : ""); });
   $("#sideNote").textContent = !f ? `Add a photo of the ${ax.long}, taken straight on from far enough back to get the whole wall in.`
-    : S.facMove ? "Drag the photo so its ground line sits on the brown line and its corners match the rooms. Pinch to zoom." : "Drag a room sideways to line it up with the photo. Upstairs rooms snap to the edges of the rooms below.";
+    : S.facMove ? "Drag the photo so its ground line sits on the brown line, then use Size until the house's corners match the outer rooms. Line the rooms up on the site photo first, so their width is right." : "Drag a room sideways to line it up with the photo. Upstairs rooms snap to the edges of the rooms below.";
   $("#sideRow1").innerHTML = !S.canWrite ? "" : f ? `<button class="btn small ${S.facMove ? "primary" : ""}" id="facMove">${S.facMove ? "Done moving photo" : "Move photo"}</button><button class="btn small" id="facScale">Set the scale</button><button class="btn small" id="facCrop">Crop</button><button class="btn small" id="facNew">Replace</button><button class="btn small danger" id="facDel">Remove</button>`
     : `<button class="btn primary small" id="facNew">Add a photo of this side</button>`;
   $("#sideRow2").hidden = !f;
+  if (f && S.facMove && S.canWrite) {
+    $("#sideRow1").insertAdjacentHTML("beforeend", `<div class="row" style="width:100%"><span>Size</span><button class="btn small" data-fsz="0.95">−5%</button><button class="btn small" data-fsz="0.99">−1%</button><button class="btn small" data-fsz="1.01">+1%</button><button class="btn small" data-fsz="1.05">+5%</button></div>`);
+    $("#sideRow1").querySelectorAll("[data-fsz]").forEach(b => b.onclick = () => { const before = JSON.stringify(S.plan); f.mpp *= +b.dataset.fsz; commit(before); });
+  }
   if (f) { $("#facShow").checked = !f.hidden; $("#facOp").value = f.opacity; }
   const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
   on("facNew", () => facadeInput.click());
@@ -2577,13 +2594,14 @@ facadeInput.onchange = async () => {
     const ns = { id: uid(), side, w, h, mpp: 0.01, u: 0, z: 0, opacity: 0.75 };
     if (store.assets) { const up = await store.assets.upload(blob, { type: "image/jpeg" }); ns.asset = up.id; }
     else { await idb.put(ns.id, blob); localPhotoURL[ns.id] = URL.createObjectURL(blob); ns.local = true; }
-    calibrateSite(ns, null, { intro: facIntro, done: mpp => {
+    const placed = mpp => {
       const ext = sideExtent(side), before = JSON.stringify(S.plan);
       ns.mpp = mpp; ns.u = r2((ext.u0 + ext.u1) / 2); ns.z = r2(h * mpp / 2 - 0.3);
       facades()[side] = ns; commit(before);
       if (old) { (async () => { try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } })(); }
       cropPhoto(ns, "Next: line it up", () => { S.side = side; S.facMove = true; if (S.view !== "side") setView("side"); fitSide(); renderAll(); });
-    } });
+    };
+    calibrateSite(ns, null, { intro: facIntro, done: placed, skip: "Size it by eye", onSkip: () => { const ext = sideExtent(side); placed(Math.max(4, ext.u1 - ext.u0) * 1.25 / w); toast("Now stretch it with the Size buttons until the house's corners match the rooms.", 6000); } });
   } catch (e) { toast((e && e.message) || "That image couldn't be used."); }
 };
 $("#sideTabs").addEventListener("click", e => { const b = e.target.closest("[data-side]"); if (!b) return; S.side = b.dataset.side; S.facMove = false; fitSide(); renderAll(); });
@@ -2633,10 +2651,12 @@ function startSiteAlign(id) {
   S.k = k; S.tx = W / 2 - st.x * k; S.ty = H / 2 - st.y * k;
   renderPlan();
 }
-function endSiteAlign() { S.siteAlign = null; $("#siteBar").hidden = true; $("#addBar").hidden = false; renderAll(); }
+function endSiteAlign() { S.siteStraight = null; straightNote(); S.siteAlign = null; $("#siteBar").hidden = true; $("#addBar").hidden = false; renderAll(); }
 $("#siteBtn").onclick = openSite;
 $("#siteDone").onclick = endSiteAlign;
-document.querySelectorAll("[data-srot]").forEach(b => b.onclick = () => { const st = alignSite(); if (!st) return; const before = JSON.stringify(S.plan); st.rot = ((st.rot + +b.dataset.srot) % 360 + 360) % 360; commit(before); renderPlan(); });
+function straightNote() { const n = S.siteStraight; $("#siteStraightNote").textContent = !n ? "" : n.length ? "Now tap the other end of that wall." : "Tap one end of a long, straight house wall on the photo."; $("#siteStraight").textContent = n ? "Cancel" : "Straighten to the grid"; }
+$("#siteStraight").onclick = () => { S.siteStraight = S.siteStraight ? null : []; straightNote(); renderPlan(); };
+document.querySelectorAll("[data-srot]").forEach(b => b.onclick = () => { const st = alignSite(); if (!st) return; const before = JSON.stringify(S.plan); st.rot = Math.round((((st.rot + +b.dataset.srot) % 360 + 360) % 360) * 100) / 100; commit(before); renderPlan(); });
 $("#siteOp").addEventListener("input", e => { const st = alignSite(); if (st) { st.opacity = +e.target.value; renderPlan(); } });
 $("#siteOp").addEventListener("change", () => commit());
 async function buildRoomFromPhotos(files, opt, progress) {
