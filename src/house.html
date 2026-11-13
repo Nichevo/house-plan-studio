@@ -55,7 +55,14 @@ button{cursor:pointer}
 
 .banner{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding-block:8px;padding-left:var(--gut-l);padding-right:var(--gut-r);background:var(--warn-soft);color:var(--ink);font-size:13px;border-bottom:1px solid var(--line)}
 
-main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 380px}
+main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 10px var(--aw,380px)}
+#grip{cursor:col-resize;background:var(--panel);border-left:1px solid var(--line);touch-action:none;display:flex;align-items:center;justify-content:center}
+#grip::after{content:"";width:3px;height:36px;border-radius:2px;background:var(--line)}
+#grip:hover::after,#grip.on::after{background:var(--accent)}
+body.panel-min main{grid-template-columns:minmax(0,1fr) 0 0}
+body.panel-min aside,body.panel-min #grip{display:none}
+.ov-tr{right:calc(12px + env(safe-area-inset-right,0px));top:12px}
+.tabs .pmin{flex:0 0 auto;padding:10px 10px;font-size:16px;letter-spacing:0}
 #stage{position:relative;min-height:0;overflow:hidden;background:var(--paper);touch-action:none}
 #plan{position:absolute;inset:0;width:100%;height:100%;display:block;user-select:none;-webkit-user-select:none}
 #three{position:absolute;inset:0}
@@ -202,6 +209,10 @@ table.tot tr.sum td{font-weight:600;border-bottom:0}
   main{display:block}
   #stage{height:58vh;height:58svh;min-height:340px}
   aside{border-left:0;border-top:1px solid var(--line);overflow:visible}
+  #grip{display:none}
+  body.panel-min #stage{height:calc(100svh - 130px)}
+  body.panel-min aside{display:block}
+  body.panel-min aside > :not(.tabs){display:none}
   .tabs{top:0}
   .hint{display:none}
 }
@@ -344,12 +355,15 @@ svg.facmove{cursor:move}
       <span class="note" data-only="3d">Photos are shown on the walls they were tagged to.</span>
     </div>
     <div class="hint" id="hint">Drag a room to move it. Select it, then drag a wall to resize or a corner to angle it. Scroll or pinch to zoom, drag empty space to pan.</div>
+    <button class="btn overlay ov-tr" id="panelShow" hidden aria-label="Show the side panel">Panel ‹</button>
   </div>
+  <div id="grip" role="separator" aria-label="Drag to resize the side panel"></div>
   <aside>
     <div class="tabs" role="tablist">
       <button role="tab" id="tabRooms" aria-selected="true">Rooms</button>
       <button role="tab" id="tabRoom" aria-selected="false">Room</button>
       <button role="tab" id="tabTotals" aria-selected="false">Totals &amp; gaps</button>
+      <button class="pmin" id="panelMin" aria-label="Hide the side panel" title="Hide panel">›</button>
     </div>
     <div id="pane" class="pane"></div>
   </aside>
@@ -2988,7 +3002,29 @@ document.addEventListener("keydown", e => {
     const r = selRoom(); edit(() => { S.plan.rooms = S.plan.rooms.filter(x => x !== r); S.sel = null; }); toast(`${r.name} deleted. Undo brings it back.`);
   }
 });
-new ResizeObserver(() => renderPlan()).observe(svg);
+new ResizeObserver(() => { renderPlan(); if (S.view === "3d") size3D(); }).observe(svg);
+/* side panel: hide it, or drag its edge to make it narrower or wider; remembered on this device */
+const narrow = () => matchMedia("(max-width: 860px)").matches;
+function setPanel(min) {
+  document.body.classList.toggle("panel-min", min); lsSet("house-panel-min", min ? "1" : "0");
+  $("#panelShow").hidden = !min || narrow();
+  const b = $("#panelMin"); b.textContent = narrow() ? (min ? "▴" : "▾") : "›"; b.title = b.ariaLabel = min ? "Show the panel" : "Hide the panel";
+  requestAnimationFrame(() => { renderPlan(); if (S.view === "3d") size3D(); });
+}
+$("#panelMin").onclick = () => setPanel(!document.body.classList.contains("panel-min"));
+$("#panelShow").onclick = () => setPanel(false);
+["#tabRooms", "#tabRoom", "#tabTotals"].forEach(id => $(id).addEventListener("click", () => { if (document.body.classList.contains("panel-min")) setPanel(false); }));
+matchMedia("(max-width: 860px)").addEventListener?.("change", () => setPanel(document.body.classList.contains("panel-min")));
+{
+  const w = +lsGet("house-panel-w"); if (w >= 240 && w <= 700) document.documentElement.style.setProperty("--aw", w + "px");
+  const g = $("#grip"); let st = null;
+  g.addEventListener("pointerdown", e => { g.setPointerCapture(e.pointerId); st = { x: e.clientX, w: $("aside").getBoundingClientRect().width }; g.classList.add("on"); });
+  g.addEventListener("pointermove", e => { if (!st) return; const w = Math.round(Math.max(240, Math.min(Math.min(700, innerWidth - 320), st.w - (e.clientX - st.x)))); document.documentElement.style.setProperty("--aw", w + "px"); });
+  const end = () => { if (!st) return; st = null; g.classList.remove("on"); lsSet("house-panel-w", Math.round($("aside").getBoundingClientRect().width)); };
+  g.addEventListener("pointerup", end); g.addEventListener("pointercancel", end);
+  g.addEventListener("dblclick", () => { document.documentElement.style.removeProperty("--aw"); lsSet("house-panel-w", ""); });
+  setPanel(lsGet("house-panel-min") === "1");
+}
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => { if (S.view === "3d") rebuild3D(); });
 
 /* ---------- Dropbox sync (installed app): plan in /project.json, each photo once in /photos/<id>.jpg, inside the app's own Dropbox folder ---------- */
