@@ -198,7 +198,8 @@ h3{font:600 16px/1.25 var(--f-label);margin:0;text-wrap:balance}
 .ph .acts{display:flex;border-top:1px solid var(--line)}
 .ph{position:relative}
 .phsel{position:absolute;top:4px;left:4px;background:var(--panel);border-radius:6px;padding:3px 4px;display:flex;line-height:0;box-shadow:0 1px 4px rgba(0,0,0,.25)}
-.phsel input{width:18px;height:18px;margin:0}
+.phsel input{width:22px;height:22px;margin:0}
+.phsel{padding:5px 6px}
 .selbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--accent-soft);border-radius:8px;padding:8px 10px}
 .selbar select{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:5px 8px;font:500 13px var(--f-label)}
 .ph .acts button{flex:1;border:0;background:var(--panel);font:500 11px var(--f-label);padding:5px 2px;color:var(--ink)}
@@ -462,6 +463,9 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const r2 = v => Math.round(v * 1000) / 1000;
 const STANDALONE = typeof window.HOUSE_CAPS === "function"; // installed app: local storage, own API key
 const cap = name => STANDALONE ? Promise.resolve(window.HOUSE_CAPS(name)) : (window.claude && window.claude.use) ? window.claude.use(name).catch(() => null) : Promise.resolve(null);
+/* Claude buttons show in the installed app even before an API key is added, and explain what's missing */
+const AI = () => !!store.sample || STANDALONE;
+function needKey(fn) { if (store.sample) return fn(); toast("Claude needs your Anthropic API key on this device. Paste it into Settings, then try again.", 6000); openSettings(); }
 function toast(msg, ms = 2600) {
   const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
   setTimeout(() => t.remove(), ms);
@@ -1199,7 +1203,7 @@ function renderRoom() {
   </div>
   <div class="sec">
     <div class="row"><h2 class="grow" style="margin:0">${out ? "Things in the garden" : "Appliances and furniture"} · ${r.items.length}</h2>
-      ${store.sample && !ro ? `<button class="btn small" id="aiItems" ${r.photos.length ? "" : "disabled"} title="${r.photos.length ? "" : "Add photos first"}">Find in photos</button>` : ""}</div>
+      ${AI() && !ro ? `<button class="btn small" id="aiItems" ${r.photos.length ? "" : "disabled"} title="${r.photos.length ? "" : "Add photos first"}">Find in photos</button>` : ""}</div>
     ${ro ? "" : `<div class="row"><select class="inp grow" id="itPick" aria-label="Item to add">${presetOpts}</select><button class="btn small" id="itAdd">+ Add</button></div>`}
     ${r.items.map(it => `<div class="op" data-it="${it.id}" ${S.selItem === it.id ? 'style="border-color:var(--accent)"' : ""}>
       <div class="row"><input class="inp grow" data-if="label" value="${esc(it.label)}" aria-label="Name" ${ro ? "disabled" : ""}>
@@ -1234,7 +1238,7 @@ function renderRoom() {
     <p class="note">A door on a shared wall opens up the neighbouring room's wall too, so add it once.</p>
   </div>
   <div class="sec">
-    <div class="row"><h2 class="grow" style="margin:0">Photos · ${r.photos.length}</h2>${store.sample ? `<button class="btn small" id="rebuildBtn" ${r.photos.length && !ro ? "" : "disabled"}>Rebuild from photos</button><button class="btn small primary" id="aiBtn" ${r.photos.length && !ro ? "" : "disabled"}>Estimate with Claude</button>` : ""}</div>
+    <div class="row"><h2 class="grow" style="margin:0">Photos · ${r.photos.length}</h2>${AI() ? `<button class="btn small" id="rebuildBtn" ${r.photos.length && !ro ? "" : "disabled"}>Rebuild from photos</button><button class="btn small primary" id="aiBtn" ${r.photos.length && !ro ? "" : "disabled"}>Estimate with Claude</button>` : ""}</div>
     ${r.photos.length && !ro ? `<p class="note" style="margin:0">Tick photos to move them to another room, or to build a new area from them.</p><div id="phSelBar"></div>` : ""}
     ${r.photos.length ? `<div class="photos">${r.photos.map(p => { const u = photoURL(p); return `<div class="ph" data-ph="${p.id}">${ro ? "" : `<label class="phsel"><input type="checkbox" data-psel="${p.id}" aria-label="Select photo"></label>`}
         ${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-measure="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
@@ -1260,7 +1264,7 @@ function bindRoom(r) {
   on("#rFloor", "change", e => edit(() => { R().floor = e.target.value; S.floor = e.target.value; }));
   on("#rKind", "change", e => edit(() => { R().kind = e.target.value; }));
   on("#itAdd", "click", () => edit(() => { const rr = R(), it = makeItem(pane.querySelector("#itPick").value, 0, 0.2); if (it.type === "stairs") it.h = r2(stairRise(rr)); clampItem(rr, it); rr.items.push(it); S.selItem = it.id; }));
-  on("#aiItems", "click", () => estimateRoom(id, { itemsOnly: true }));
+  on("#aiItems", "click", () => needKey(() => estimateRoom(id, { itemsOnly: true })));
   pane.querySelectorAll("[data-it]").forEach(box => {
     const iid = box.dataset.it;
     box.querySelectorAll("[data-irot]").forEach(b => b.onclick = () => edit(() => { const it = R().items.find(x => x.id === iid); if (it) { it.rot = ((((it.rot || 0) + +b.dataset.irot) % 360) + 540) % 360 - 180; S.selItem = iid; } }));
@@ -1325,7 +1329,7 @@ function bindRoom(r) {
     const others = S.plan.rooms.filter(x => x.id !== id);
     bar.innerHTML = `<div class="selbar"><b>${picked.size} selected</b>
       ${others.length ? `<select id="phMoveTo"><option value="">Move to…</option>${others.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("")}</select>` : ""}
-      ${store.sample ? `<button class="btn small primary" id="phNewArea">Build a new area from these</button>` : ""}
+      ${AI() ? `<button class="btn small primary" id="phNewArea">Build a new area from these</button>` : ""}
       <button class="btn small" id="phSelAll">${picked.size === R().photos.length ? "Select none" : "Select all"}</button></div>`;
     const mv = bar.querySelector("#phMoveTo");
     if (mv) mv.onchange = () => {
@@ -1334,7 +1338,7 @@ function bindRoom(r) {
       edit(() => { const rr = R(), moving = rr.photos.filter(p => picked.has(p.id)); rr.photos = rr.photos.filter(p => !picked.has(p.id)); to.photos.push(...moving.map(p => ({ ...p, wall: null }))); });
       toast(`Moved ${n} photo${n > 1 ? "s" : ""} to ${to.name}.`);
     };
-    const na = bar.querySelector("#phNewArea"); if (na) na.onclick = () => openNewArea(id, [...picked]);
+    const na = bar.querySelector("#phNewArea"); if (na) na.onclick = () => needKey(() => openNewArea(id, [...picked]));
     bar.querySelector("#phSelAll").onclick = () => {
       const all = picked.size !== R().photos.length; picked.clear(); if (all) R().photos.forEach(p => picked.add(p.id));
       pane.querySelectorAll("[data-psel]").forEach(el => el.checked = picked.has(el.dataset.psel)); selBar();
@@ -1348,8 +1352,8 @@ function bindRoom(r) {
     drop.addEventListener("dragleave", () => drop.classList.remove("over"));
     drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); addPhotos(R(), e.dataTransfer.files); });
   }
-  on("#aiBtn", "click", () => estimateRoom(id));
-  on("#rebuildBtn", "click", () => openRebuild(id));
+  on("#aiBtn", "click", () => needKey(() => estimateRoom(id)));
+  on("#rebuildBtn", "click", () => needKey(() => openRebuild(id)));
   on("#rotRoom", "click", () => edit(() => rotateRoom(R())));
   on("#flipRoom", "click", () => edit(() => flipRoom(R())));
   on("#cnAdd", "click", () => { const i = +pane.querySelector("#cnWall").value; edit(() => splitWall(R(), i)); toast("Corner added in the middle of the wall. Drag its handle on the plan."); });
