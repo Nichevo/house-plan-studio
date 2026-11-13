@@ -157,6 +157,7 @@ table.tot tr.sum td{font-weight:600;border-bottom:0}
 .room{stroke:none;cursor:move}
 .t0{fill:var(--t0)}.t1{fill:var(--t1)}.t2{fill:var(--t2)}.t3{fill:var(--t3)}.t4{fill:var(--t4)}.t5{fill:var(--t5)}.t6{fill:var(--t6)}
 .wall{fill:none;stroke:var(--wall);stroke-linejoin:miter}
+.extw{stroke:var(--wall);stroke-linecap:butt}
 .gapl{stroke:var(--paper)}
 .sym{fill:none;stroke:var(--wall)}
 .win{stroke:var(--wall)}
@@ -441,6 +442,32 @@ function edges(room) {
   return out;
 }
 const perim = room => edges(room).reduce((s, e) => s + e.len, 0);
+/* outside walls: total thickness extT, inner face stays where it is, the extra goes outward */
+const extT = () => Math.max(S.plan.wallT, S.plan.extT || S.plan.wallT);
+/* the parts of each wall that face outside (no indoor room backing onto them), as [from, to, extendStart, extendEnd] along the wall */
+function outsideSpans(room, plan = S.plan) {
+  const t = plan.wallT, es = edges(room), n = es.length;
+  return es.map((e, i) => {
+    const cov = [];
+    for (const B of plan.rooms) {
+      if (B === room || B.floor !== room.floor || isOut(B)) continue;
+      for (const f of edges(B)) {
+        if (e.n[0] * f.n[0] + e.n[1] * f.n[1] > -0.98) continue;
+        const off = Math.abs((f.a[0] - e.a[0]) * e.n[0] + (f.a[1] - e.a[1]) * e.n[1]); if (off > t * 1.6) continue;
+        let u0 = (f.a[0] - e.a[0]) * e.d[0] + (f.a[1] - e.a[1]) * e.d[1], u1 = (f.b[0] - e.a[0]) * e.d[0] + (f.b[1] - e.a[1]) * e.d[1];
+        if (u0 > u1) [u0, u1] = [u1, u0]; u0 = Math.max(0, u0); u1 = Math.min(e.len, u1); if (u1 - u0 > 0.02) cov.push([u0, u1]);
+      }
+    }
+    cov.sort((a, b) => a[0] - b[0]);
+    const out = []; let cur = 0;
+    for (const [a, b] of cov) { if (a > cur + 0.02) out.push([cur, a]); cur = Math.max(cur, b); }
+    if (cur < e.len - 0.02) out.push([cur, e.len]);
+    const nx = es[(i + 1) % n], pv = es[(i + n - 1) % n];
+    const convexEnd = nx.d[0] * e.n[0] + nx.d[1] * e.n[1] > 0.05, convexStart = e.d[0] * pv.n[0] + e.d[1] * pv.n[1] > 0.05;
+    return out.map(([a, b]) => [a, b, a < 0.03 && convexStart, b > e.len - 0.03 && convexEnd]);
+  });
+}
+const onOutside = (spans, s) => spans.some(([a, b]) => s >= a - 0.01 && s <= b + 0.01);
 function bbox(pts) { let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 }; }
 function centroid(p) {
   let a = 0, cx = 0, cy = 0;
@@ -754,6 +781,12 @@ function planMarkup(fid, o) {
   rooms = [...outs, ...ins];
   for (const r of ins) out.push(`<polygon class="room t${r.c % 7}" data-room="${r.id}" points="${r.pts.join(" ")}"/>`);
   for (const r of ins) out.push(`<polygon class="wall" points="${r.pts.join(" ")}" stroke-width="${t}"/>`);
+  const T = extT(), band = T - t, spansOf = {};
+  for (const r of ins) spansOf[r.id] = band > 0.004 ? outsideSpans(r) : edges(r).map(() => []);
+  if (band > 0.004) for (const r of ins) edges(r).forEach(e => { for (const [a0, b0, xs, xe] of spansOf[r.id][e.i]) {
+    const a = a0 - (xs ? T - t / 2 : 0), b = b0 + (xe ? T - t / 2 : 0), ox = -e.n[0] * T / 2, oy = -e.n[1] * T / 2;
+    out.push(`<line class="extw" x1="${e.a[0] + e.d[0] * a + ox}" y1="${e.a[1] + e.d[1] * a + oy}" x2="${e.a[0] + e.d[0] * b + ox}" y2="${e.a[1] + e.d[1] * b + oy}" stroke-width="${band}"/>`);
+  } });
   // openings: clear the wall, then draw the symbol
   for (const r of ins) {
     const es = edges(r);
@@ -768,6 +801,8 @@ function planMarkup(fid, o) {
       }
       const A = P(op.offset), B = P(op.offset + op.width);
       out.push(`<line class="gapl" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke-width="${t * 1.35}"/>`);
+      const ext = band > 0.004 && onOutside(spansOf[r.id][e.i], op.offset + op.width / 2), sh = ext ? -(T - t) / 2 : 0, tw = ext ? T : t;
+      if (ext) out.push(`<line class="gapl" x1="${A[0] - e.n[0] * T / 2}" y1="${A[1] - e.n[1] * T / 2}" x2="${B[0] - e.n[0] * T / 2}" y2="${B[1] - e.n[1] * T / 2}" stroke-width="${band * 1.3}"/>`);
       if (op.type === "door") {
         const hingeStart = op.hinge !== "end", out_ = op.swing === "out";
         const H = hingeStart ? A : B, F = hingeStart ? B : A, nn = out_ ? [-e.n[0], -e.n[1]] : e.n, w = op.width;
@@ -776,10 +811,10 @@ function planMarkup(fid, o) {
         out.push(`<path class="sym" d="M${F[0]},${F[1]} A${w},${w} 0 0 ${sweep} ${L[0]},${L[1]}" stroke-width="${1 / k}" stroke-dasharray="${3 / k} ${2 / k}"/>`);
       } else {
         for (const f of [-0.28, 0, 0.28]) {
-          const ox = e.n[0] * t * f, oy = e.n[1] * t * f;
+          const ox = e.n[0] * (tw * f + sh), oy = e.n[1] * (tw * f + sh);
           out.push(`<line class="win" x1="${A[0] + ox}" y1="${A[1] + oy}" x2="${B[0] + ox}" y2="${B[1] + oy}" stroke-width="${(f ? 1.2 : 0.8) / k}"/>`);
         }
-        for (const Q of [A, B]) out.push(`<line class="win" x1="${Q[0] - e.n[0] * t / 2}" y1="${Q[1] - e.n[1] * t / 2}" x2="${Q[0] + e.n[0] * t / 2}" y2="${Q[1] + e.n[1] * t / 2}" stroke-width="${1.2 / k}"/>`);
+        for (const Q of [A, B]) out.push(`<line class="win" x1="${Q[0] + e.n[0] * (sh - tw / 2)}" y1="${Q[1] + e.n[1] * (sh - tw / 2)}" x2="${Q[0] + e.n[0] * (sh + tw / 2)}" y2="${Q[1] + e.n[1] * (sh + tw / 2)}" stroke-width="${1.2 / k}"/>`);
       }
     }
   }
@@ -1424,7 +1459,7 @@ function renderTotals() {
     <div class="row"><label class="field" style="width:140px">Extra for waste<select id="waste">${[5, 10, 15].map(w => `<option value="${w}" ${(S.waste || 10) === w ? "selected" : ""}>${w}%</option>`).join("")}</select></label></div>
     <div class="list">${S.plan.rooms.filter(r => !isOut(r)).sort((a, b) => S.plan.floors.findIndex(f => f.id === a.floor) - S.plan.floors.findIndex(f => f.id === b.floor)).map(r => `<div class="item"><span class="t"><span>${esc(r.name)}</span><small>${esc(floorOf(r).name)}</small></span><b class="num">${fmtArea(area(r.pts) * (1 + (S.waste || 10) / 100))}</b></div>`).join("")}</div>
   </div>
-  <div class="sec"><h2>Outside size</h2>${rows.filter(x => x.fp).map(x => `<p class="num" style="margin:0">${esc(x.f.name)}: ${fmtLen(x.fp.w + S.plan.wallT)} × ${fmtLen(x.fp.h + S.plan.wallT)}</p>`).join("") || `<p class="note">Add rooms to see the footprint.</p>`}</div>`;
+  <div class="sec"><h2>Outside size</h2>${rows.filter(x => x.fp).map(x => `<p class="num" style="margin:0">${esc(x.f.name)}: ${fmtLen(x.fp.w + 2 * extT() - S.plan.wallT)} × ${fmtLen(x.fp.h + 2 * extT() - S.plan.wallT)}</p>`).join("") || `<p class="note">Add rooms to see the footprint.</p>`}</div>`;
   const ws = pane.querySelector("#waste"); if (ws) ws.onchange = () => { S.waste = +ws.value; renderTotals(); };
 }
 function renderPane() {
@@ -1517,7 +1552,7 @@ function build3D(opts) {
       const shape = new THREE.Shape(r.pts.map(p => new THREE.Vector2(p[0], -p[1])));
       const fgeo = new THREE.ExtrudeGeometry(shape, { depth: slab, bevelEnabled: false }); fgeo.rotateX(-Math.PI / 2);
       const fm = new THREE.Mesh(fgeo, floorMats[r.c % 7]); fm.position.y = elev - slab; fm.name = r.name + " floor"; rg.add(fm);
-      const h = roomH(r), names = wallNames(r);
+      const h = roomH(r), names = wallNames(r), T3 = extT() - t / 2, oSp = T3 > 0.004 ? outsideSpans(r) : null;
       edges(r).forEach(e => {
         const list = (cuts[r.id][e.i] || []).slice().sort((a, b) => a.s - b.s);
         const pieces = []; let cur = 0;
@@ -1539,6 +1574,14 @@ function build3D(opts) {
           const mid = (s + en) / 2;
           m.position.set(e.a[0] + e.d[0] * mid + e.n[0] * t / 4, elev + (y0 + y1) / 2, e.a[1] + e.d[1] * mid + e.n[1] * t / 4);
           m.rotation.y = Math.atan2(-e.d[1], e.d[0]); m.name = `${r.name} ${names[e.i]}`; rg.add(m);
+          // the outer skin of an outside wall
+          if (oSp) for (const [a0, b0, xs, xe] of oSp[e.i]) {
+            let s2 = Math.max(s, a0), e2 = Math.min(en, b0); if (e2 - s2 < 0.005) continue;
+            if (xs && s2 < 0.001) s2 -= T3; if (xe && e2 > e.len - 0.001) e2 += T3;
+            const o = new THREE.Mesh(new THREE.BoxGeometry(e2 - s2, y1 - y0, T3), wallMat), md = (s2 + e2) / 2;
+            o.position.set(e.a[0] + e.d[0] * md - e.n[0] * T3 / 2, elev + (y0 + y1) / 2, e.a[1] + e.d[1] * md - e.n[1] * T3 / 2);
+            o.rotation.y = m.rotation.y; o.name = `${r.name} ${names[e.i]} outside`; rg.add(o);
+          }
         }
       });
       if (L.photos && opts.photos !== false) {
@@ -2757,7 +2800,9 @@ function openSettings() {
       <label class="field">House name<input id="sName" value="${esc(S.plan.name)}" ${ro ? "disabled" : ""}></label>
       <label class="field">Units<select id="sUnits"><option value="m" ${S.plan.units === "m" ? "selected" : ""}>Metric (m)</option><option value="ft" ${S.plan.units === "ft" ? "selected" : ""}>Imperial (ft, in)</option></select></label>
       <label class="field">Interior wall thickness<input class="num" id="sWall" value="${esc(fmtIn(S.plan.wallT))}" ${ro ? "disabled" : ""}></label>
+      <label class="field">Outside wall thickness<input class="num" id="sExt" value="${esc(fmtIn(extT()))}" ${ro ? "disabled" : ""}></label>
     </div>
+    <p class="note" style="margin:4px 0 0">Outside walls grow outwards, so rooms keep their inside sizes. A timber-framed NZ house with weatherboards is about 15 to 20 cm; brick veneer is about 25 to 30 cm.</p>
     <div class="sec"><h2>Floors</h2>
       ${S.plan.floors.map((f, i) => `<div class="grid3" data-fl="${f.id}">
         <label class="field">Name<input data-ff="name" value="${esc(f.name)}" ${ro ? "disabled" : ""}></label>
@@ -2790,6 +2835,7 @@ function openSettings() {
   }
   if (ro) return;
   el.querySelector("#sName").onchange = e => edit(() => S.plan.name = e.target.value.trim() || "My house");
+  el.querySelector("#sExt").onchange = e => { const v = parseLen(e.target.value); if (v && v >= 0.05 && v <= 0.8) edit(() => S.plan.extT = Math.max(v, S.plan.wallT)); else toast("Use a thickness between 5 cm and 80 cm."); };
   el.querySelector("#sWall").onchange = e => { const v = parseLen(e.target.value); if (v && v >= 0.05 && v <= 0.5) edit(() => S.plan.wallT = v); else toast("Use a thickness between 5 cm and 50 cm."); };
   el.querySelectorAll("[data-fl]").forEach(row => row.querySelectorAll("[data-ff]").forEach(inp => inp.onchange = () => {
     const f = S.plan.floors.find(x => x.id === row.dataset.fl), k = inp.dataset.ff;
