@@ -309,6 +309,7 @@ svg.facmove{cursor:move}
     <div id="three" hidden></div>
     <div class="overlay ov-tl" id="addBar">
       <button class="btn primary" id="addPhotoRoom">+ Room from photos</button>
+      <button class="btn" id="addScan">LiDAR scan</button>
       <button class="btn" id="addRect">+ Room</button>
       <button class="btn" id="addL">+ L-shaped room</button>
       <button class="btn" id="addGarden">+ Garden</button>
@@ -1155,6 +1156,197 @@ function addRoom(shape, kind) {
   toast("Room added. Drag it into place, then set its wall lengths.");
 }
 
+/* ---------- LiDAR scans: import a room scan made with a scanning app (RoomPlan JSON or a DXF floor plan) ---------- */
+const ROOMPLAN_ITEMS = { refrigerator: "fridge", stove: "cooker", oven: "cooker", dishwasher: "dishwasher", washerDryer: "washer", sink: "sink", toilet: "toilet", bathtub: "bath", bed: "bed", sofa: "sofa", chair: "armchair", table: "table", storage: "wardrobe", television: "tv", fireplace: "heatpump", stairs: "stairs" };
+/* tidy a loop: drop points closer than 3 cm and corners straighter than 3° */
+function tidyLoop(pts) {
+  let p = pts.map(q => [q[0], q[1]]);
+  for (let pass = 0; pass < 3; pass++) {
+    p = p.filter((q, i) => { const n = p[(i + 1) % p.length]; return Math.hypot(n[0] - q[0], n[1] - q[1]) > 0.03; });
+    p = p.filter((q, i) => { const a = p[(i + p.length - 1) % p.length], b = p[(i + 1) % p.length], u = [q[0] - a[0], q[1] - a[1]], v = [b[0] - q[0], b[1] - q[1]], cr = u[0] * v[1] - u[1] * v[0], dt = u[0] * v[0] + u[1] * v[1]; return Math.abs(Math.atan2(cr, dt)) > 3 * Math.PI / 180; });
+    if (p.length < 3) return null;
+  }
+  return p;
+}
+/* join line segments end to end into closed loops (ends within tol metres count as joined) */
+function chainLoops(segs, tol = 0.03) {
+  const left = segs.slice(), loops = [];
+  const same = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) <= tol;
+  while (left.length) {
+    const s0 = left.pop(), loop = [s0[0], s0[1]];
+    let grew = true;
+    while (grew && !same(loop[0], loop[loop.length - 1])) {
+      grew = false; const end = loop[loop.length - 1];
+      for (let i = 0; i < left.length; i++) { const [a, b] = left[i]; if (same(a, end)) { loop.push(b); left.splice(i, 1); grew = true; break; } if (same(b, end)) { loop.push(a); left.splice(i, 1); grew = true; break; } }
+    }
+    if (loop.length >= 4 && same(loop[0], loop[loop.length - 1])) loops.push(loop.slice(0, -1));
+  }
+  return loops;
+}
+/* DXF floor plan: closed polylines, or lines that join into loops. Returns loops in metres, y down */
+function parseDXF(text) {
+  const raw = text.split(/\r?\n/), pairs = [];
+  for (let i = 0; i + 1 < raw.length; i += 2) pairs.push([+raw[i].trim(), raw[i + 1].trim()]);
+  let units = 0;
+  for (let i = 0; i < pairs.length - 1; i++) if (pairs[i][0] === 9 && pairs[i][1] === "$INSUNITS") { units = +pairs[i + 1][1]; break; }
+  const ents = []; let cur = null, inEnt = false, poly = null;
+  for (const [c, v] of pairs) {
+    if (c === 0) {
+      if (v === "SECTION") { inEnt = false; } 
+      if (cur) { if (cur.type === "VERTEX" && poly) poly.pts.push(cur.p); else if (cur.type !== "VERTEX") ents.push(cur); cur = null; }
+      if (v === "SEQEND") { poly = null; continue; }
+      if (["LINE", "LWPOLYLINE", "POLYLINE", "VERTEX"].includes(v)) { cur = { type: v, layer: "", pts: [], p: [0, 0], x1: 0, y1: 0, x2: 0, y2: 0, closed: false }; if (v === "POLYLINE") poly = cur; }
+      continue;
+    }
+    if (!cur) continue;
+    if (c === 8) cur.layer = v;
+    else if (c === 70 && (cur.type === "LWPOLYLINE" || cur.type === "POLYLINE")) cur.closed = (+v & 1) === 1;
+    else if (cur.type === "LINE") { if (c === 10) cur.x1 = +v; else if (c === 20) cur.y1 = +v; else if (c === 11) cur.x2 = +v; else if (c === 21) cur.y2 = +v; }
+    else if (cur.type === "LWPOLYLINE") { if (c === 10) cur.pts.push([+v, 0]); else if (c === 20 && cur.pts.length) cur.pts[cur.pts.length - 1][1] = +v; }
+    else if (cur.type === "VERTEX") { if (c === 10) cur.p = [+v, cur.p[1]]; else if (c === 20) cur.p = [cur.p[0], +v]; }
+  }
+  if (cur && cur.type !== "VERTEX") ents.push(cur);
+  // prefer wall layers when the file has them
+  const wallish = ents.filter(e => /wall|mur|room|floor ?plan|outline/i.test(e.layer));
+  const use = wallish.length >= 3 ? wallish : ents.filter(e => !/dim|text|anno|furn|door|window|label/i.test(e.layer));
+  const loops = [], segs = [];
+  for (const e of use) {
+    if (e.type === "LINE") segs.push([[e.x1, e.y1], [e.x2, e.y2]]);
+    else if (e.pts.length >= 2) {
+      const p = e.pts, first = p[0], last = p[p.length - 1], closed = e.closed || (p.length >= 4 && Math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-6);
+      if (closed && p.length >= 3) loops.push(Math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-6 ? p.slice(0, -1) : p);
+      else for (let i = 0; i < p.length - 1; i++) segs.push([p[i], p[i + 1]]);
+    }
+  }
+  // units: from the header, or guessed from the overall size
+  const all = [...loops.flat(), ...segs.flat()]; if (!all.length) return { loops: [] };
+  const bb = bbox(all), span = Math.max(bb.w, bb.h);
+  let f = { 1: 0.0254, 2: 0.3048, 4: 0.001, 5: 0.01, 6: 1, 14: 0.1 }[units];
+  if (!f) f = span > 400 ? 0.001 : span > 60 ? 0.01 : 1;
+  const tol = 0.03 / f;
+  const found = [...loops, ...chainLoops(segs, tol)].map(l => l.map(([x, y]) => [x * f, -y * f]));
+  return { loops: found, units: f };
+}
+/* Apple RoomPlan CapturedRoom JSON: walls, doors, windows, openings and objects, each with dimensions and a 4×4 transform */
+function parseRoomPlan(j) {
+  const rooms = Array.isArray(j.rooms) ? j.rooms : [j]; // a CapturedStructure has several rooms
+  return rooms.map(room => {
+    const T = s => { const t = s.transform; return Array.isArray(t) && t.length >= 16 ? t.map(Number) : Array.isArray(t) && t.length === 4 ? t.flat().map(Number) : null; };
+    const pos = t => [t[12], t[13], t[14]], xAxis = t => [t[0], t[1], t[2]];
+    const walls = (room.walls || []).map(w => { const t = T(w), d = w.dimensions || []; if (!t || !(d[0] > 0.2)) return null; const p = pos(t), ax = xAxis(t), L = Math.hypot(ax[0], ax[2]) || 1, u = [ax[0] / L, ax[2] / L], h = +d[0] / 2; return { a: [p[0] - u[0] * h, p[2] - u[1] * h], b: [p[0] + u[0] * h, p[2] + u[1] * h], mid: [p[0], p[2]], u, len: +d[0], height: +d[1], y0: p[1] - d[1] / 2 }; }).filter(Boolean);
+    if (walls.length < 3) return null;
+    // corners where neighbouring walls meet: chain wall ends, else go round the middle of the room
+    const c = walls.reduce((s, w) => [s[0] + w.mid[0] / walls.length, s[1] + w.mid[1] / walls.length], [0, 0]);
+    let order = null;
+    { const loops = chainLoops(walls.map(w => [w.a, w.b]), 0.2); if (loops.length === 1 && loops[0].length === walls.length) order = loops[0]; }
+    let pts;
+    if (order) pts = order;
+    else {
+      const ws = walls.slice().sort((a, b) => Math.atan2(a.mid[1] - c[1], a.mid[0] - c[0]) - Math.atan2(b.mid[1] - c[1], b.mid[0] - c[0]));
+      pts = ws.map((w, i) => { const v = ws[(i + 1) % ws.length], den = w.u[0] * v.u[1] - w.u[1] * v.u[0]; if (Math.abs(den) < 0.05) return [(w.b[0] + v.a[0]) / 2, (w.b[1] + v.a[1]) / 2]; const dx = v.mid[0] - w.mid[0], dy = v.mid[1] - w.mid[1], tt = (dx * v.u[1] - dy * v.u[0]) / den; return [w.mid[0] + w.u[0] * tt, w.mid[1] + w.u[1] * tt]; });
+    }
+    const height = Math.max(...walls.map(w => w.height)), floorY = Math.min(...walls.map(w => w.y0));
+    const thing = (s, kind) => { const t = T(s), d = s.dimensions || []; if (!t) return null; const p = pos(t), ax = xAxis(t); return { kind, c: [p[0], p[2]], y: p[1] - floorY, ang: Math.atan2(ax[2], ax[0]), w: +d[0] || 0.8, h: +d[1] || 2, d: +d[2] || 0.5, cat: s.category ? Object.keys(s.category)[0] : "" }; };
+    const ops = [...(room.doors || []).map(s => thing(s, "door")), ...(room.openings || []).map(s => thing(s, "door")), ...(room.windows || []).map(s => thing(s, "window"))].filter(Boolean);
+    const objs = (room.objects || []).map(s => thing(s, "object")).filter(Boolean);
+    return { loop: pts, height, ops, objs };
+  }).filter(Boolean);
+}
+/* turn a scanned loop into a room on the plan, with every wall marked as measured */
+function scanToRoom(sc, name, floor) {
+  const r = rect(name, floor, 0, 0, 1, 1, S.plan.rooms.length % 7);
+  r.pts = sc.loop.map(([x, y]) => [r2(x), r2(y)]);
+  if (shoelace(r.pts) < 0) r.pts.reverse();
+  edges(r).forEach(e => r.measured[e.i] = true);
+  if (sc.height > 1.8 && sc.height < 6) r.height = Math.round(sc.height * 100) / 100;
+  const es = edges(r), near = P => { let best = null; for (const e of es) { const t = (P[0] - e.a[0]) * e.d[0] + (P[1] - e.a[1]) * e.d[1], tc = Math.max(0, Math.min(e.len, t)), q = [e.a[0] + e.d[0] * tc, e.a[1] + e.d[1] * tc], d = Math.hypot(P[0] - q[0], P[1] - q[1]); if (!best || d < best.d) best = { e, t: tc, d, inward: (P[0] - e.a[0]) * e.n[0] + (P[1] - e.a[1]) * e.n[1] }; } return best; };
+  for (const o of sc.ops || []) {
+    const b = near(o.c); if (!b || b.d > 0.5) continue;
+    const op = o.kind === "door" ? door(b.e.i, r2(b.t - o.w / 2), r2(o.w), { height: r2(Math.min(o.h, 2.4)) }) : win(b.e.i, r2(b.t - o.w / 2), r2(o.w), { height: r2(o.h), sill: r2(Math.max(0, o.y - o.h / 2)) });
+    clampOpening(r, op); r.openings.push(op);
+  }
+  for (const o of sc.objs || []) {
+    const type = ROOMPLAN_ITEMS[o.cat]; if (!type) continue;
+    const b = near(o.c); if (!b) continue;
+    let rot = ((o.ang - Math.atan2(b.e.d[1], b.e.d[0])) * 180 / Math.PI) % 180; if (rot > 90) rot -= 180; if (rot < -90) rot += 180;
+    let w = o.w, d = o.d; if (Math.abs(rot) > 45) { [w, d] = [d, w]; rot = rot > 0 ? rot - 90 : rot + 90; }
+    if (Math.abs(rot) < 5) rot = 0;
+    const it = makeItem(type, b.e.i, r2(b.t - w / 2), { w: r2(w), d: r2(d), h: r2(o.h), out: r2(Math.max(0, b.inward - S.plan.wallT / 2 - d / 2)), rot: Math.round(rot) });
+    clampItem(r, it); r.items.push(it);
+  }
+  return r;
+}
+/* turn a set of loops so the longest wall lines up with the grid */
+function squareLoops(loops) {
+  let best = null; for (const l of loops) l.forEach((a, i) => { const b = l[(i + 1) % l.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (!best || L > best.L) best = { L, ang: Math.atan2(b[1] - a[1], b[0] - a[0]) }; });
+  if (!best) return 0; const target = Math.round(best.ang / (Math.PI / 2)) * Math.PI / 2; return target - best.ang;
+}
+function rotatePts(pts, a, c) { const cs = Math.cos(a), sn = Math.sin(a); return pts.map(([x, y]) => [c[0] + (x - c[0]) * cs - (y - c[1]) * sn, c[1] + (x - c[0]) * sn + (y - c[1]) * cs]); }
+const scanInput = document.createElement("input"); scanInput.type = "file"; scanInput.accept = ".json,.dxf,application/json,application/dxf,image/vnd.dxf,text/plain";
+function openScanImport(replaceId) {
+  const target = replaceId ? S.plan.rooms.find(r => r.id === replaceId) : null;
+  const m = modal(target ? `Reshape ${target.name} from a LiDAR scan` : "Import a LiDAR room scan", `
+    <p style="margin:0">Your iPhone 12 Pro Max has a LiDAR scanner. A web app can't use it directly, but a scanning app can: scan the room in the app, export the floor plan, and choose the file here. Every wall comes in marked ✓ Real.</p>
+    <ul class="note" style="margin:0;padding-left:18px"><li><b>DXF floor plan</b>: most LiDAR floor-plan apps can export one (look for DXF or CAD in the export or share menu).</li><li><b>RoomPlan JSON</b>: apps built on Apple's RoomPlan sometimes offer a JSON export. It also brings doors, windows and furniture.</li><li>USDZ, OBJ and PDF files can't be read yet. If your app only offers those, tell Claude which app it is.</li></ul>
+    ${target ? `<p class="note" style="margin:0">The scan replaces ${esc(target.name)}'s outline. Its photos, doors, windows and items move onto the nearest new walls.</p>` : ""}
+    <div class="row"><button class="btn primary" id="scPick">Choose the scan file</button><span class="note grow" id="scStat" style="margin:0"></span></div>
+    <div id="scOut"></div>`);
+  const stat = m.el.querySelector("#scStat"), outEl = m.el.querySelector("#scOut");
+  m.el.querySelector("#scPick").onclick = () => { scanInput.value = ""; scanInput.click(); };
+  scanInput.onchange = async () => {
+    const f = scanInput.files[0]; if (!f) return;
+    stat.textContent = "Reading…";
+    let scans = [];
+    try {
+      const text = await f.text();
+      if (/^\s*[{[]/.test(text)) { scans = parseRoomPlan(JSON.parse(text)); }
+      else if (/SECTION/.test(text.slice(0, 5000))) scans = parseDXF(text).loops.map(loop => ({ loop }));
+      else throw 0;
+    } catch { stat.textContent = "That file couldn't be read. Use a DXF floor plan or a RoomPlan JSON file."; return; }
+    // keep plausible rooms; a loop that holds two or more others is the outside of the house
+    scans = scans.map(s => ({ ...s, loop: tidyLoop(s.loop) })).filter(s => s.loop && area(s.loop) > 1 && area(s.loop) < 400);
+    const inside = (a, b) => b.loop.every(q => pip(q, a.loop) || a.loop.some(p => Math.hypot(p[0] - q[0], p[1] - q[1]) < 0.05));
+    scans.forEach(s => { s.outer = scans.filter(o => o !== s && area(o.loop) < area(s.loop) && inside(s, o)).length >= 2; });
+    // drop near-duplicates (the inner and outer face of the same wall loop)
+    scans = scans.filter((s, i) => !scans.some((o, j) => j < i && Math.abs(area(o.loop) - area(s.loop)) < 0.02 * area(s.loop) && Math.hypot(centroid(o.loop)[0] - centroid(s.loop)[0], centroid(o.loop)[1] - centroid(s.loop)[1]) < 0.3));
+    if (!scans.length) { stat.textContent = "No room outlines were found in that file."; return; }
+    // square the whole scan to the grid by its longest wall
+    const ang = squareLoops(scans.map(s => s.loop)), c0 = centroid(scans[0].loop);
+    scans.forEach(s => { s.loop = rotatePts(s.loop, ang, c0); (s.ops || []).forEach(o => { o.c = rotatePts([o.c], ang, c0)[0]; o.ang += ang; }); (s.objs || []).forEach(o => { o.c = rotatePts([o.c], ang, c0)[0]; o.ang += ang; }); });
+    const rooms = scans.filter(s => !s.outer), outer = scans.filter(s => s.outer).sort((a, b) => area(b.loop) - area(a.loop))[0];
+    stat.textContent = `Found ${rooms.length} room${rooms.length === 1 ? "" : "s"}${outer ? " and the outside of the house" : ""}.`;
+    outEl.innerHTML = `<div class="list">${rooms.map((s, i) => { const b = bbox(s.loop); return `<label class="item" style="cursor:pointer"><input type="${target ? "radio" : "checkbox"}" name="scPick" data-sc="${i}" ${i === 0 || !target ? "checked" : ""}><span class="t"><span>${target ? esc(target.name) : `Room ${i + 1}`}: ${fmtLen(b.w)} × ${fmtLen(b.h)}</span><small class="muted">${fmtArea(area(s.loop))} · ${s.loop.length} walls${s.ops && s.ops.length ? ` · ${s.ops.length} doors and windows` : ""}${s.objs && s.objs.length ? ` · ${s.objs.filter(o => ROOMPLAN_ITEMS[o.cat]).length} items` : ""}</small></span></label>`; }).join("")}</div>
+      ${outer && !target ? `<label class="row note" style="gap:6px"><input type="checkbox" id="scOuter" ${outlineOf(S.floor) ? "" : "checked"}> Also use the outside of the house as this floor's house outline${outlineOf(S.floor) ? " (replaces the one you traced)" : ""}</label>` : ""}
+      <div class="row"><span class="grow"></span><button class="btn primary" id="scGo">${target ? "Reshape the room" : "Add to the plan"}</button></div>`;
+    outEl.querySelector("#scGo").onclick = () => {
+      const picked = rooms.filter((_, i) => outEl.querySelector(`[data-sc="${i}"]`).checked); if (!picked.length) { toast("Tick at least one room."); return; }
+      const before = JSON.stringify(S.plan);
+      if (target) {
+        const sc = picked[0], nr = scanToRoom(sc, target.name, target.floor), oc = centroid(target.pts), nc = centroid(nr.pts);
+        nr.pts = nr.pts.map(([x, y]) => [r2(x - nc[0] + oc[0]), r2(y - nc[1] + oc[1])]);
+        const old = clone(target), es = edges(nr);
+        remapOnto(old, nr);
+        // photos follow the wall they showed
+        const oe = edges(old);
+        target.photos.forEach(p => { if (p.wall == null || !oe[p.wall]) return; const e = oe[p.wall], P = [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2]; let bi = 0, bd = 1e9; es.forEach(f => { const t = Math.max(0, Math.min(f.len, (P[0] - f.a[0]) * f.d[0] + (P[1] - f.a[1]) * f.d[1])), d = Math.hypot(P[0] - f.a[0] - f.d[0] * t, P[1] - f.a[1] - f.d[1] * t); if (d < bd) { bd = d; bi = f.i; } }); p.wall = bi; });
+        if (sc.ops && sc.ops.length) { const fresh = scanToRoom(sc, "", target.floor); const lk = nr.openings.filter(o => o.locked); nr.openings = lk.concat(fresh.openings.map(o => ({ ...o }))); }
+        target.pts = nr.pts; target.openings = nr.openings; target.items = nr.items; target.measured = nr.measured; if (nr.height) target.height = nr.height; delete target.slope;
+        target.openings.forEach(o => clampOpening(target, o)); target.items.forEach(it => clampItem(target, it));
+        commit(before); m.close(); toast(`${target.name} reshaped from the scan, with every wall ✓ Real.`, 5000); return;
+      }
+      // place the group to the right of what's already on this floor, keeping the rooms' layout
+      const all = picked.flatMap(s => s.loop), b = bbox(all), have = roomsOn(S.floor), hb = have.length ? bbox(have.flatMap(r => r.pts)) : null;
+      const dx = (hb ? hb.x1 + 1.5 : 0) - b.x0, dy = (hb ? hb.y0 : 0) - b.y0;
+      const shift = s => ({ ...s, loop: s.loop.map(([x, y]) => [x + dx, y + dy]), ops: (s.ops || []).map(o => ({ ...o, c: [o.c[0] + dx, o.c[1] + dy] })), objs: (s.objs || []).map(o => ({ ...o, c: [o.c[0] + dx, o.c[1] + dy] })) });
+      const made = picked.map((s, i) => scanToRoom(shift(s), `Scanned room ${roomsOn(S.floor).length + i + 1}`, S.floor));
+      S.plan.rooms.push(...made); S.sel = made[0].id; S.tab = "room";
+      if (outer && outEl.querySelector("#scOuter") && outEl.querySelector("#scOuter").checked) { S.plan.outlines ||= {}; let ol = shift(outer).loop.map(([x, y]) => [r2(x), r2(y)]); if (shoelace(ol) < 0) ol = ol.reverse(); S.plan.outlines[S.floor] = ol; }
+      commit(before); fit(S.floor); renderPlan(); m.close();
+      toast(`Added ${made.length} scanned room${made.length > 1 ? "s" : ""} with every wall ✓ Real. Rename ${made.length > 1 ? "them" : "it"} and drag into place.`, 6000);
+    };
+  };
+}
+
 /* ---------- side panel ---------- */
 const pane = $("#pane");
 function swatch(r) { return `<span class="sw t${r.c % 7}" style="background:${PALETTE_LIGHT[r.c % 7]}"></span>`; }
@@ -1306,7 +1498,7 @@ function renderRoom() {
   </div>
   ${ro ? "" : `<div class="sec"><div class="row"><button class="btn" id="rotRoom">Rotate 90°</button><button class="btn" id="flipRoom">Flip</button><button class="btn" id="dupRoom">Duplicate room</button><span class="confirm" id="delWrap"><button class="btn danger" id="delRoom">Delete room</button></span></div></div>
   <div class="sec"><h4 style="margin:0 0 6px">Shape: angles, cut corners and cut-outs</h4><p class="note" style="margin:0 0 6px">Drag a square corner handle on the plan to angle a wall. It snaps to 45° and 90° and to other rooms' corners. For a triangle, remove a corner. For exact angles, type them in.</p>
-    <div class="row"><button class="btn small primary" id="shpNums">Type lengths and angles</button><button class="btn small" id="shpCut">Cut a corner</button><button class="btn small" id="shpNotch">Cut out a notch</button></div>
+    <div class="row"><button class="btn small primary" id="shpNums">Type lengths and angles</button><button class="btn small" id="shpCut">Cut a corner</button><button class="btn small" id="shpNotch">Cut out a notch</button><button class="btn small" id="shpScan">Reshape from a LiDAR scan</button></div>
     <div class="row"><select class="inp" id="cnWall" style="flex:1;min-width:120px">${wallNames(r).map((nm, i) => `<option value="${i}">${esc(nm)}</option>`).join("")}</select><button class="btn small" id="cnAdd">Add a corner</button></div>
     <div class="row"><select class="inp" id="cnPt" style="flex:1;min-width:120px">${cornerAngles(r.pts).map((a, i) => `<option value="${i}">Corner ${i + 1} (${a}°)</option>`).join("")}</select><button class="btn small" id="cnDel" ${r.pts.length <= 3 ? "disabled" : ""}>Remove corner</button></div></div>
   <div class="sec"><h4 style="margin:0 0 6px">Resize to fit</h4><p class="note" style="margin:0 0 6px">Shrink or grow the whole room evenly, keeping its shape, to fit the house outline. Measured walls stay locked, so set those lengths instead.</p>
@@ -1423,6 +1615,7 @@ function bindRoom(r) {
   on("#shpNums", "click", () => openShapeNumbers(id));
   on("#shpCut", "click", () => openCutCorner(id, false));
   on("#shpNotch", "click", () => openCutCorner(id, true));
+  on("#shpScan", "click", () => openScanImport(id));
   on("#cnAdd", "click", () => { const i = +pane.querySelector("#cnWall").value; edit(() => splitWall(R(), i)); toast("Corner added in the middle of the wall. Drag its handle on the plan."); });
   on("#cnDel", "click", () => { const v = +pane.querySelector("#cnPt").value; const before = JSON.stringify(S.plan); if (removeCorner(R(), v)) commit(before); else toast("Removing that corner would make the walls cross."); });
   pane.querySelectorAll("[data-rsz]").forEach(b => b.onclick = () => {
@@ -3452,6 +3645,7 @@ $("#projInput").addEventListener("change", async e => {
 
 /* ---------- wire up ---------- */
 $("#addRect").onclick = () => addRoom("rect");
+$("#addScan").onclick = () => openScanImport();
 $("#addPhotoRoom").onclick = () => openPhotoRoom();
 $("#emptyPhotoRoom").onclick = () => openPhotoRoom();
 $("#addL").onclick = () => addRoom("L");
