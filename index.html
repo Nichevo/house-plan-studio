@@ -50,7 +50,7 @@
     if (name === "sample") {
       if (!HOUSE_KEY.get()) return null;
       var f = async function (p, o) { return { text: await ask(p, o), truncated: false }; };
-      f.limits = async function () { return { maxPromptBytes: 262144, images: { maxCount: 12, maxInputBytes: 30000000, mediaTypes: ["image/jpeg", "image/png", "image/webp"] } }; };
+      f.limits = async function () { return { maxPromptBytes: 262144, images: { maxCount: 20, maxInputBytes: 30000000, mediaTypes: ["image/jpeg", "image/png", "image/webp"] } }; };
       f.json = async function (p, o) {
         var t = await ask(p, o), i = t.indexOf("{"), j = t.lastIndexOf("}");
         try { return JSON.parse(t.slice(i, j + 1)); } catch (e) { throw { code: "invalid_json", text: t }; }
@@ -1083,7 +1083,7 @@ function renderRoom() {
     <p class="note">A door on a shared wall opens up the neighbouring room's wall too, so add it once.</p>
   </div>
   <div class="sec">
-    <div class="row"><h2 class="grow" style="margin:0">Photos · ${r.photos.length}</h2>${store.sample ? `<button class="btn small primary" id="aiBtn" ${r.photos.length && !ro ? "" : "disabled"}>Estimate with Claude</button>` : ""}</div>
+    <div class="row"><h2 class="grow" style="margin:0">Photos · ${r.photos.length}</h2>${store.sample ? `<button class="btn small" id="rebuildBtn" ${r.photos.length && !ro ? "" : "disabled"}>Rebuild from photos</button><button class="btn small primary" id="aiBtn" ${r.photos.length && !ro ? "" : "disabled"}>Estimate with Claude</button>` : ""}</div>
     ${r.photos.length ? `<div class="photos">${r.photos.map(p => { const u = photoURL(p); return `<div class="ph" data-ph="${p.id}">
         ${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-measure="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
         <select data-tag="${p.id}" aria-label="Wall shown" ${ro ? "disabled" : ""}>${wallOpts(p.wall)}</select>
@@ -1164,6 +1164,7 @@ function bindRoom(r) {
     drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); addPhotos(R(), e.dataTransfer.files); });
   }
   on("#aiBtn", "click", () => estimateRoom(id));
+  on("#rebuildBtn", "click", () => openRebuild(id));
   on("#rotRoom", "click", () => edit(() => rotateRoom(R())));
   on("#flipRoom", "click", () => edit(() => flipRoom(R())));
   on("#dupRoom", "click", () => edit(() => { const c = clone(R()); c.id = uid(); c.name += " copy"; c.photos = []; c.pts = c.pts.map(p => [p[0] + 0.5, p[1] + 0.5]); c.openings.forEach(o => o.id = uid()); (c.items || []).forEach(o => o.id = uid()); S.plan.rooms.push(c); S.sel = c.id; }));
@@ -1728,6 +1729,7 @@ async function openPhotoRoom(preset) {
       const r = res.room, b = bbox(r.pts), doors = r.openings.filter(o => o.type === "door").length, wins = r.openings.filter(o => o.type === "window").length, nItems = r.items.length;
       m.el.querySelector("#prResult").innerHTML = `<div class="op"><b>Added ${esc(r.name)}: ${fmtLen(b.w)} × ${fmtLen(b.h)}, ${fmtArea(area(r.pts))}</b>
         <span class="note">${isOut(r) ? "Outdoor area" : `${doors} door${doors === 1 ? "" : "s"}, ${wins} window${wins === 1 ? "" : "s"}`}, ${nItems} appliance${nItems === 1 ? "" : "s"} and other item${nItems === 1 ? "" : "s"}. ${res.placedNext ? `Placed against ${esc(res.placedNext)}${res.shared ? ", sharing its door" : ""}.` : res.first ? "This is the first room on the floor." : "Placed at the side of the plan, so drag it into position."} ${res.ai ? "Sizes are estimates until you measure them." : ""}</span>
+        ${res.used && res.used < res.total ? `<span class="note">Claude looked at ${res.used} of the ${res.total} photos (walls and doors first). All of them are kept with the room.</span>` : ""}
         ${res.notes ? `<span class="note"><b>Tip from Claude:</b> ${esc(res.notes)}</span>` : ""}
         ${res.warn ? `<span class="note" style="color:var(--warn)">${esc(res.warn)}</span>` : ""}
         <div class="row"><button class="btn primary" id="prNextRoom">Add the next room</button><button class="btn" id="prDone">Done, I'll check the plan</button></div></div>`;
@@ -1741,7 +1743,7 @@ const CAP_STEPS = [
   { k: "w1", label: "Wall 1", wall: true, tip: "Stand against the opposite wall and get this whole wall in: floor to ceiling, corner to corner. Measure this wall if you can." },
   { k: "w2", label: "Wall 2", wall: true, tip: "Turn right to the next wall and take it the same way." },
   { k: "w3", label: "Wall 3", wall: true, tip: "Keep turning right. Whole wall, floor to ceiling." },
-  { k: "w4", label: "Wall 4", wall: true, tip: "Last wall. If the room has more walls (an L-shape or an alcove), tap + Wall after this." },
+  { k: "w4", label: "Wall 4", wall: true, tip: "If the room has more walls (an L-shape, an alcove or an open-plan space), tap + Wall for each extra one." },
   { k: "corner", label: "Corners", multi: true, tip: "Stand in a corner and aim at the opposite one, so two walls, the floor and the ceiling show. One shot per corner." },
   { k: "door", label: "Doors and windows", multi: true, tip: "Each door and window straight on, with some wall either side. Then stand in each doorway and shoot into the next room." },
   { k: "item", label: "Furniture", multi: true, tip: "Each big item and appliance from the front, a little to one side so its depth shows." }];
@@ -1822,7 +1824,6 @@ async function openCapture(preset) {
     if (st.wall) q("#capLenIn").value = lens[st.k] ? fmtIn(lens[st.k]) : "";
     q("#capPrev").disabled = cur === 0;
     q("#capNext").textContent = cur === steps.length - 1 ? "Done" : (st.multi ? (n ? "Next" : "Skip") : (n ? "Next" : "Skip"));
-    q("#capAddWall").hidden = !st.wall;
     q("#capSteps").innerHTML = steps.map((s, i) => {
       const ss = stepShots(s.k), last = ss[ss.length - 1];
       return `<button class="capstep" data-i="${i}" aria-current="${i === cur}">${last ? `<img src="${last.url}" alt="">` : `<span class="dot"></span>`}<span>${esc(s.label)}${ss.length > 1 ? ` (${ss.length})` : ""}${ss.some(x => x.warn.length) ? " ⚠" : ss.length ? " ✓" : ""}</span></button>`;
@@ -1974,8 +1975,37 @@ async function arMeasure() {
     renderer.setAnimationLoop(null); hts.cancel && hts.cancel(); renderer.dispose(); ov.remove(); res(result);
   }));
 }
+/* redo a room from scratch from the photos it already has, e.g. after it came out the wrong shape */
+function openRebuild(roomId) {
+  const old = S.plan.rooms.find(r => r.id === roomId); if (!old || !S.canWrite) return;
+  const m = modal(`Rebuild ${old.name} from its photos`, `
+    <p style="margin:0">Claude looks at this room's ${old.photos.length} photos again and redraws it from scratch: walls, doors, windows and furniture. Changes you made to it by hand are replaced. You can undo afterwards.</p>
+    <div class="grid2">
+      <label class="field">Room name (optional)<input id="rbName" placeholder="Claude will suggest one"></label>
+      <label class="field">Wall in the first photo is (optional)<input class="num" id="rbKnown" value="${old.photos[0] && old.photos[0].len ? esc(fmtIn(old.photos[0].len)) : ""}" placeholder="${S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.80"}"></label>
+      <label class="field" style="flex-direction:row;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" id="rbOut" ${isOut(old) ? "checked" : ""}> This is outdoors</label>
+    </div>
+    <div class="row"><button class="btn primary" id="rbGo">Rebuild the room</button><span class="grow"></span><span class="note" id="rbStatus"></span></div>`);
+  m.el.querySelector("#rbGo").onclick = async () => {
+    const go = m.el.querySelector("#rbGo"), status = m.el.querySelector("#rbStatus"); go.disabled = true;
+    const known = parseLen(m.el.querySelector("#rbKnown").value), before = JSON.stringify(S.plan);
+    const photos = old.photos.map(p => ({ ...p, wall: null }));
+    if (photos[0]) { if (known && known > 0.3) photos[0].len = known; else delete photos[0].len; }
+    const idx = S.plan.rooms.indexOf(old); S.plan.rooms.splice(idx, 1);
+    try {
+      const res = await buildRoomFromPhotos([], { photos, name: m.el.querySelector("#rbName").value.trim(), outdoor: m.el.querySelector("#rbOut").checked, floor: old.floor, before }, t => status.textContent = t);
+      m.close();
+      const b = bbox(res.room.pts);
+      toast(`Rebuilt as ${res.room.name}: ${fmtLen(b.w)} × ${fmtLen(b.h)}${res.used && res.used < res.total ? `, from ${res.used} of ${res.total} photos` : ""}.${res.warn ? " " + res.warn : ""}`, 6000);
+    } catch (e) { S.plan.rooms.splice(idx, 0, old); status.textContent = (e && e.message) || "Something went wrong. Try again."; go.disabled = false; }
+  };
+}
 async function buildRoomFromPhotos(files, opt, progress) {
   const photos = [], aiBlobs = [];
+  if (opt.photos) { // rebuilding a room from the photos it already has
+    for (const p of opt.photos) { const b = await photoBlob(p).catch(() => null); if (b) { photos.push(p); aiBlobs.push(b); } }
+    if (!photos.length) throw new Error("The photos couldn't be loaded on this device.");
+  }
   for (let i = 0; i < files.length; i++) {
     progress(`Saving photo ${i + 1} of ${files.length}…`);
     const { blob, w, h } = await downscale(files[i]);
@@ -1985,19 +2015,29 @@ async function buildRoomFromPhotos(files, opt, progress) {
     photos.push(p); aiBlobs.push(blob);
   }
   const existing = roomsOn(opt.floor), fl = S.plan.floors.find(f => f.id === opt.floor);
-  let est = null, warn = "";
+  let est = null, warn = "", sel = null, used = 0;
+  // remember what each guided photo shows and any measured wall, so the room can be rebuilt later
+  if (opt.labels) photos.forEach((p, i) => { if (opt.labels[i]) p.label = opt.labels[i]; });
+  if (opt.known && photos[0]) photos[0].len = opt.known;
+  for (const mz of opt.measured || []) if (photos[mz.photo]) photos[mz.photo].len = mz.len;
+  const labels = photos.map(p => p.label || ""), measured = photos.map((p, i) => p.len ? { photo: i, len: p.len } : null).filter(Boolean);
   if (store.sample) {
     const lim = await store.sample.limits().catch(() => null);
     if (lim && lim.images) {
-      const n = Math.min(aiBlobs.length, lim.images.maxCount), imgs = [];
-      for (let i = 0; i < n; i++) imgs.push((await downscale(aiBlobs[i], 1568, 0.85)).blob);
-      progress(`Claude is looking at ${n} photo${n > 1 ? "s" : ""}. This can take up to a minute…`);
+      // too many photos: keep every wall shot, then doors, corners and furniture, in the order taken
+      const lab = i => String(labels[i] || ""), rank = i => /^wall/.test(lab(i)) ? 0 : /door/.test(lab(i)) ? 1 : /corner/.test(lab(i)) ? 2 : lab(i) ? 3 : 0;
+      sel = aiBlobs.map((_, i) => i).sort((a, b) => rank(a) - rank(b) || a - b).slice(0, lim.images.maxCount).sort((a, b) => a - b);
+      const n = sel.length, imgs = [], selLabels = labels.length ? sel.map(i => labels[i] || "another view") : null;
+      const selMeasured = measured.map(x => ({ photo: sel.indexOf(x.photo), len: x.len })).filter(x => x.photo >= 0);
+      for (const i of sel) imgs.push((await downscale(aiBlobs[i], n > 12 ? 1280 : 1568, 0.85)).blob);
+      used = n;
+      progress(`Claude is looking at ${n}${n < aiBlobs.length ? ` of ${aiBlobs.length}` : ""} photo${n > 1 ? "s" : ""}. This can take up to a minute…`);
       const prompt = `You are helping build a floor plan of a house from phone photos. These ${n} photos all show ONE ${opt.outdoor ? "outdoor area (garden, patio, yard or driveway)" : "room or outdoor space"} on the ${fl.name}, in the order they were taken, turning clockwise.${opt.outdoor ? " Treat its boundary (fences, hedges, walls, the house wall) as its walls." : " If it is a garden or other outdoor space, say so and treat its boundary (fences, hedges, walls) as its walls."}
 Rooms already drawn on this floor: ${existing.length ? existing.map(r => `"${r.name}"`).join(", ") : "none yet"}.
 ${opt.name ? `The user calls this room "${opt.name}".` : `Suggest a short name for the room, such as Kitchen, Bedroom 2 or Hall, that is not already in the list above.`}
-${opt.known ? `The main wall facing the camera in photo 1 is ${opt.known.toFixed(2)} m long, measured with a tape. Use it as the scale.` : ""}
-${(opt.measured || []).filter(x => x.photo < n).map(x => `The main wall facing the camera in photo ${x.photo + 1} is ${x.len.toFixed(2)} m long, measured.`).join(" ")}
-${opt.labels ? `The user took these with a guide that labels each photo: ${opt.labels.slice(0, n).map((l, i) => `photo ${i + 1} is ${l}`).join("; ")}. The wall photos go round the room clockwise; the other photos are extra views to help you place doors, windows and items.` : ""}
+${selMeasured.map(x => `The main wall facing the camera in photo ${x.photo + 1} is ${x.len.toFixed(2)} m long, measured with a tape.${x.photo === 0 ? " Use it as the scale." : ""}`).join(" ")}
+${selLabels && selLabels.some(l => l !== "another view") ? `The user took these with a guide that labels each photo: ${selLabels.map((l, i) => `photo ${i + 1} is ${l}`).join("; ")}. The wall photos go round the room clockwise; the other photos are extra views to help you place doors, windows and items.` : ""}
+If this is an open-plan space that combines several areas (such as entrance, kitchen, dining and living) with no doors between them, treat it all as ONE room: trace its whole outer boundary with as many walls as it needs, and name it after its main uses, such as "Kitchen / Living". Only put a door where there is a doorway in a wall; a wide opening between areas of the same space is not a door. Doors are usually 0.7 to 0.9 m wide.
 Work out the room's outline. Walk around the walls clockwise as seen from above, starting at the left end of the main wall facing the camera in photo 1, so wall 0 is that wall. For each wall give its length and whether you turn right ("R", an ordinary corner like in a rectangle) or left ("L", an inward corner like in an L-shaped room) at its end. A rectangular room has 4 walls, all "R". An L-shaped room has 6 walls, five "R" and one "L". Ignore small recesses, chimney breasts and bay windows under 0.4 m deep.
 For scale, use any measured length first, then objects of standard size: interior doors are about 0.80 m wide and 2.03 m tall, worktops about 0.90 m high and 0.60 m deep, light switches about 1.2 m up, sockets about 0.3 m up, beds about 1.9 to 2.0 m long, and floor tiles and boards of standard sizes. Typical ceilings are 2.3 to 2.7 m.
 ${ITEM_PROMPT}
@@ -2019,7 +2059,8 @@ photo_walls lists, for each photo in order, the number of the wall it mainly sho
   if (pts) r.pts = pts;
   // a tape-measured wall 1 sets the scale of the whole room, not just that wall
   let f = 1;
-  if (est && opt.known && r.pts.length >= 4 && Array.isArray(est.walls) && +(est.walls[0] || {}).length_m > 0) { f = opt.known / +est.walls[0].length_m; if (f > 0.4 && f < 2.5) r.pts = r.pts.map(([x, y]) => [r2(x * f), r2(y * f)]); else f = 1; }
+  const known0 = sel && sel[0] === 0 && photos[0].len ? photos[0].len : null;
+  if (est && known0 && r.pts.length >= 4 && Array.isArray(est.walls) && +(est.walls[0] || {}).length_m > 0) { f = known0 / +est.walls[0].length_m; if (f > 0.4 && f < 2.5) r.pts = r.pts.map(([x, y]) => [r2(x * f), r2(y * f)]); else f = 1; }
   else if (est && Array.isArray(est.walls) && est.walls.length >= 2) { const w = +est.walls[0].length_m || 3.5, d = +est.walls[1].length_m || 3; r.pts = [[0, 0], [w, 0], [w, d], [0, d]].map(p => [r2(p[0]), r2(p[1])]); }
   if (est && est.ceiling_height_m > 1.8 && est.ceiling_height_m < 6) r.height = Math.round(est.ceiling_height_m * 100) / 100;
   const nE = r.pts.length;
@@ -2034,23 +2075,22 @@ photo_walls lists, for each photo in order, the number of the wall it mainly sho
   if (opt.outdoor || (est && est.outdoor === true)) { r.kind = "outdoor"; r.openings = []; r.height = null; r.c = 5; }
   r.items = parseItems(est && est.items, nE); r.items.forEach(it => { it.along *= f; it.out *= f; clampItem(r, it); });
   const pw = est && Array.isArray(est.photo_walls) ? est.photo_walls : null;
-  photos.forEach((p, i) => { const w = pw ? pw[i] : (est ? null : i); p.wall = Number.isInteger(w) && w >= 0 && w < nE ? w : null; });
+  photos.forEach((p, i) => { const k = sel ? sel.indexOf(i) : -1, w = pw ? (k >= 0 ? pw[k] : null) : (est ? null : i); p.wall = Number.isInteger(w) && w >= 0 && w < nE ? w : null; });
   r.photos = photos;
-  if (opt.known && setEdgeLength(r, 0, opt.known)) r.measured[0] = true;
-  for (const mz of opt.measured || []) { const w = photos[mz.photo] && photos[mz.photo].wall; if (Number.isInteger(w) && !(w === 0 && opt.known) && setEdgeLength(r, w, mz.len)) r.measured[w] = true; }
+  for (const mz of measured) { const w = photos[mz.photo].wall; if (Number.isInteger(w) && !r.measured[w] && setEdgeLength(r, w, mz.len)) r.measured[w] = true; }
   r.openings.forEach(o => clampOpening(r, o));
   // which room does it connect to?
   let nb = opt.nextTo ? existing.find(x => x.id === opt.nextTo) : null;
   if (!nb) for (const o of r.openings) { if (o.leadsTo && !/outside/i.test(o.leadsTo)) { nb = existing.find(x => sameName(x.name, o.leadsTo)); if (nb) break; } }
   if (!nb) nb = existing.find(x => x.openings.some(o => sameName(o.leadsTo, r.name))) || null;
-  const before = JSON.stringify(S.plan);
+  const before = opt.before || JSON.stringify(S.plan);
   const nDoors = r.openings.length;
   const placed = placeRoom(r, nb);
   const shared = r.openings.length < nDoors;
   S.plan.rooms.push(r); S.sel = r.id; S.tab = "room";
   commit(before);
   fit(S.floor); renderPlan();
-  return { room: r, shared, placedNext: placed ? placed.name : null, first: !existing.length, ai: !!est, notes: est && typeof est.notes === "string" ? est.notes : "", warn };
+  return { room: r, used, total: photos.length, shared, placedNext: placed ? placed.name : null, first: !existing.length, ai: !!est, notes: est && typeof est.notes === "string" ? est.notes : "", warn };
 }
 
 /* ---------- settings ---------- */
