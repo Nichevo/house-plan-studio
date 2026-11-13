@@ -395,6 +395,12 @@ svg.facmove{cursor:move}
       <div class="row"><span>See-through</span><input type="range" id="siteOp" min="0.15" max="1" step="0.05"></div>
       <div class="row"><span class="grow"></span><button class="btn primary" id="siteDone">Done</button></div>
     </div>
+    <div class="sitebar" id="walkBar" hidden>
+      <b id="walkTitle">Measuring walk</b>
+      <span class="note" style="margin:0" id="walkNote"></span>
+      <div class="row"><input class="num inp" id="walkLen" inputmode="decimal" style="flex:1;min-width:90px;font-size:18px" aria-label="Measured length"><button class="btn primary" id="walkSave">Save and next</button></div>
+      <div class="row"><button class="btn small" id="walkSkip">Skip this wall</button><span class="grow"></span><button class="btn small" id="walkDone">Finish</button></div>
+    </div>
     <div class="sitebar" id="traceBar" hidden>
       <b>Trace the house outline</b>
       <span class="note" style="margin:0" id="traceNote"></span>
@@ -989,7 +995,7 @@ function renderPlan() {
     return `<g transform="translate(${st.x} ${st.y}) rotate(${st.rot})" pointer-events="none">${clip}<image href="${esc(photoURL(st))}" x="${-W / 2}" y="${-H / 2}" width="${W}" height="${H}" opacity="${st.opacity}" preserveAspectRatio="none"${c ? ` clip-path="url(#sc-${st.id})"` : ""}/></g>`;
   }).join("");
   svg.classList.toggle("aligning", !!S.siteAlign);
-  const marks = otherFloorMarkup(k) + outlineMarkup(k) + (S.siteStraight || []).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="${6 / k}" fill="#ff3b30" stroke="#fff" stroke-width="${2 / k}" pointer-events="none"/>`).join("");
+  const marks = otherFloorMarkup(k) + outlineMarkup(k) + walkMarkup(k) + (S.siteStraight || []).map(q => `<circle cx="${q[0]}" cy="${q[1]}" r="${6 / k}" fill="#ff3b30" stroke="#fff" stroke-width="${2 / k}" pointer-events="none"/>`).join("");
   svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${under ? `${under}<g class="gridover" pointer-events="none">${grid}</g>` : grid}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims, keyWalls: S.tab === "totals" && !S.siteAlign ? keyWalls(S.floor) : null })}${marks}</g>`;
 }
 function fit(fid) {
@@ -1591,7 +1597,7 @@ function renderTotals() {
     <p class="note">${done} of ${S.plan.rooms.length} rooms have a photo of every wall and real measurements.</p>
   </div>
   <div class="sec">
-    <h2>Measure these next</h2>
+    <div class="row"><h2 class="grow" style="margin:0">Measure these next</h2>${S.canWrite && keyWalls(S.floor).length ? `<button class="btn small primary" id="walkStart">Start a measuring walk</button>` : ""}</div>
     ${(() => { const kw = keyWalls(S.floor); return kw.length ? `<p class="note" style="margin:0">A tape measure on these walls fixes the most. They're numbered on the plan. Type the length on the Room tab.</p><div class="list">${kw.map((c, i) => `<button class="gap" data-pick="${c.room.id}"><span class="k" style="background:var(--accent)"></span><span class="t" style="display:flex;flex-direction:column;min-width:0"><span><b>${i + 1}.</b> ${esc(c.room.name)}, ${esc(c.name.toLowerCase())} (about ${esc(fmtLen(c.len))})</span><small class="muted">${esc([c.fixes.length ? `Sets the size of ${c.fixes.join(" and ")}` : "", ...c.why].filter(Boolean).join("; "))}</small></span></button>`).join("")}</div>` : `<div class="empty">Every room on this floor has a measured wall each way.</div>`; })()}
   </div>
   <div class="sec">
@@ -1615,6 +1621,7 @@ function renderTotals() {
   <div class="sec"><h2>Outside size</h2>${rows.filter(x => x.fp).map(x => `<p class="num" style="margin:0">${esc(x.f.name)}: ${fmtLen(x.fp.w + 2 * extT() - S.plan.wallT)} × ${fmtLen(x.fp.h + 2 * extT() - S.plan.wallT)}</p>`).join("") || `<p class="note">Add rooms to see the footprint.</p>`}</div>`;
   const ws = pane.querySelector("#waste"); if (ws) ws.onchange = () => { S.waste = +ws.value; renderTotals(); };
   const cg = pane.querySelector("#closeGaps"); if (cg) cg.onclick = () => closeGaps(S.floor);
+  const wk = pane.querySelector("#walkStart"); if (wk) wk.onclick = startWalk;
 }
 function renderPane() {
   for (const [id, t] of [["tabRooms", "rooms"], ["tabRoom", "room"], ["tabTotals", "totals"]]) $("#" + id).setAttribute("aria-selected", S.tab === t);
@@ -1637,7 +1644,7 @@ function renderTop() {
   $("#floorTabs").innerHTML = S.plan.floors.map(f => `<button data-floor="${f.id}" aria-pressed="${f.id === S.floor}">${esc(f.name)}</button>`).join("");
   $("#exampleBanner").hidden = !S.plan.example || !S.canWrite;
   $("#undoBtn").disabled = !S.undo.length;
-  $("#addBar").hidden = S.view !== "2d" || !S.canWrite || !!S.trace || !!S.siteAlign; $("#zoomBar").hidden = S.view === "3d"; $("#sideBar").hidden = S.view !== "side"; if (S.view === "side") renderSideBar(); $("#hint").hidden = S.view !== "2d" || !!S.trace;
+  $("#addBar").hidden = S.view !== "2d" || !S.canWrite || !!S.trace || !!S.siteAlign || !!S.walk; $("#zoomBar").hidden = S.view === "3d"; $("#sideBar").hidden = S.view !== "side"; if (S.view === "side") renderSideBar(); $("#hint").hidden = S.view !== "2d" || !!S.trace;
   $("#bar3d").hidden = S.view !== "3d";
   document.querySelectorAll("#layersPop [data-only]").forEach(el => el.hidden = el.dataset.only !== S.view);
   document.querySelectorAll("#layersPop [data-ly]").forEach(el => el.checked = !!S.layers[el.dataset.ly]);
@@ -1645,7 +1652,7 @@ function renderTop() {
   $("#emptyFloor").hidden = S.view !== "2d" || !S.canWrite || roomsOn(S.floor).length > 0;
   $("#v2d").setAttribute("aria-pressed", S.view === "2d"); $("#v3d").setAttribute("aria-pressed", S.view === "3d"); $("#vside").setAttribute("aria-pressed", S.view === "side");
 }
-$("#floorTabs").addEventListener("click", e => { const b = e.target.closest("[data-floor]"); if (!b) return; if (S.trace) endTrace(); S.floor = b.dataset.floor; const r = selRoom(); if (r && r.floor !== S.floor) S.sel = null; renderAll(); });
+$("#floorTabs").addEventListener("click", e => { const b = e.target.closest("[data-floor]"); if (!b) return; if (S.trace) endTrace(); if (S.walk) endWalk(); S.floor = b.dataset.floor; const r = selRoom(); if (r && r.floor !== S.floor) S.sel = null; renderAll(); });
 function renderAll() { fixFloor(); renderTop(); renderPlan(); renderPane(); if (S.view === "3d") schedule3D(); }
 
 /* ---------- 3D ---------- */
@@ -1820,6 +1827,7 @@ function setView(v) {
   if (was === "2d") S.planView = { k: S.k, tx: S.tx, ty: S.ty }; else if (was === "side") S.sideView = { k: S.k, tx: S.tx, ty: S.ty };
   if (S.siteAlign && v !== "2d") endSiteAlign();
   if (S.trace && v !== "2d") endTrace();
+  if (S.walk && v !== "2d") endWalk();
   S.view = v; $("#plan").hidden = v === "3d"; $("#three").hidden = v !== "3d";
   if (v === "2d" && S.planView) Object.assign(S, S.planView);
   if (v === "side") { if (S.sideView) Object.assign(S, S.sideView); else fitSide(); }
@@ -2846,6 +2854,45 @@ function startSiteAlign(id) {
 function endSiteAlign() { S.siteStraight = null; straightNote(); S.siteAlign = null; $("#siteBar").hidden = true; $("#addBar").hidden = false; renderAll(); }
 $("#siteBtn").onclick = openSite;
 $("#siteDone").onclick = endSiteAlign;
+/* ---------- measuring walk: go round the house with a tape, one useful wall at a time ---------- */
+function walkNext() {
+  const w = S.walk; if (!w) return;
+  const c = keyWalls(S.floor, 200).find(x => !w.skip.has(x.room.id + ":" + x.wall));
+  if (!c) { const n = w.n; endWalk(); toast(n ? `Measuring walk done: ${n} wall${n > 1 ? "s" : ""} measured. Every room on this floor has a measured wall each way${w.skip.size ? ", apart from the ones you skipped" : ""}.` : "Every room on this floor already has a measured wall each way.", 6000); return; }
+  w.room = c.room.id; w.wall = c.wall; S.sel = c.room.id; S.selItem = null;
+  const left = keyWalls(S.floor, 200).filter(x => !w.skip.has(x.room.id + ":" + x.wall)).length;
+  $("#walkTitle").textContent = `Measuring walk · ${c.room.name}`;
+  $("#walkNote").textContent = `${c.name}, shown in orange: about ${fmtLen(c.len)} on the plan. Measure along the floor from corner to corner, inside the room. ${left > 1 ? `Up to ${left} walls to go.` : "Last one."}`;
+  const inp = $("#walkLen"); inp.value = ""; inp.placeholder = S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.85";
+  const r = c.room, b = bbox(r.pts), W = svg.clientWidth, H = svg.clientHeight, k = Math.max(2, Math.min(400, Math.min(W / (b.w + 3), (H - 200) / (b.h + 3))));
+  S.k = k; S.tx = W / 2 - (b.x0 + b.w / 2) * k; S.ty = (H - 160) / 2 - (b.y0 + b.h / 2) * k;
+  renderAll(); setTimeout(() => { try { inp.focus({ preventScroll: true }); } catch { } }, 50);
+}
+function walkMarkup(k) {
+  const w = S.walk; if (!w || S.view !== "2d") return "";
+  const r = S.plan.rooms.find(x => x.id === w.room), e = r && edges(r)[w.wall]; if (!e) return "";
+  return `<line x1="${e.a[0]}" y1="${e.a[1]}" x2="${e.b[0]}" y2="${e.b[1]}" stroke="#E8590C" stroke-width="${7 / k}" stroke-linecap="round" pointer-events="none"/>`;
+}
+function startWalk() {
+  if (S.view !== "2d") $("#v2d").click();
+  if (S.trace) endTrace(); if (S.siteAlign) endSiteAlign();
+  S.walk = { skip: new Set(), n: 0 }; $("#walkBar").hidden = false; $("#addBar").hidden = true;
+  walkNext();
+}
+function endWalk() { S.walk = null; $("#walkBar").hidden = true; renderAll(); }
+$("#walkDone").onclick = endWalk;
+$("#walkSkip").onclick = () => { const w = S.walk; if (!w) return; w.skip.add(w.room + ":" + w.wall); walkNext(); };
+const walkSave = () => {
+  const w = S.walk; if (!w) return;
+  const v = parseLen($("#walkLen").value); if (!v || v < 0.2 || v > 60) { toast("Type the length you measured, like 3.85 or 385 cm."); return; }
+  const r = S.plan.rooms.find(x => x.id === w.room); if (!r) return walkNext();
+  const before = JSON.stringify(S.plan);
+  if (!setEdgeLength(r, w.wall, v)) { toast("That length doesn't fit this room's shape. Check it, or skip this wall."); return; }
+  r.measured[w.wall] = true; r.openings.forEach(o => clampOpening(r, o)); (r.items || []).forEach(it => clampItem(r, it));
+  w.n++; commit(before); walkNext();
+};
+$("#walkSave").onclick = walkSave;
+$("#walkLen").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); walkSave(); } });
 /* the floor below (or, on the ground floor, the one above) drawn see-through over this one, to line rooms up */
 const otherFloor = () => { const i = S.plan.floors.findIndex(f => f.id === S.floor); return S.plan.floors[i - 1] || S.plan.floors[i + 1] || null; };
 function otherFloorMarkup(k) {
