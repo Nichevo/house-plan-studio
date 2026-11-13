@@ -330,7 +330,10 @@ body.capturing{overflow:hidden}
 .sitebar input[type=range]{flex:1;min-width:80px}
 #plan.aligning{cursor:move}
 .calwrap{position:relative;background:#000;border-radius:8px;overflow:hidden;touch-action:none}
-.calwrap canvas{display:block;width:100%;height:auto}
+.calwrap{height:min(58vh,520px)}
+.calwrap canvas{display:block;width:100%;height:100%;cursor:crosshair}
+.calzoom{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:6px}
+.calzoom button{width:40px;height:40px;border-radius:50%;border:0;background:rgba(255,255,255,.92);font-size:20px;font-weight:600;color:#111;box-shadow:0 1px 4px rgba(0,0,0,.4)}
 @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
 </style>
 
@@ -881,7 +884,10 @@ function renderPlan() {
   for (let x = Math.floor(x0 / minor) * minor; x <= x1; x += minor) { const mj = Math.abs(x / major - Math.round(x / major)) < 1e-6; lines.push(`<line class="${mj ? "gmajor" : "gminor"}" x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke-width="${1 / k}"/>`); }
   for (let y = Math.floor(y0 / minor) * minor; y <= y1; y += minor) { const mj = Math.abs(y / major - Math.round(y / major)) < 1e-6; lines.push(`<line class="${mj ? "gmajor" : "gminor"}" x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke-width="${1 / k}"/>`); }
   grid = lines.join("");
-  const under = (S.plan.sites || []).filter(st => st.floor === S.floor && (S.siteAlign === st.id || (S.layers.site && !st.hidden)) && photoURL(st)).map(st => `<g transform="translate(${st.x} ${st.y}) rotate(${st.rot})" pointer-events="none"><image href="${esc(photoURL(st))}" x="${-st.w * st.mpp / 2}" y="${-st.h * st.mpp / 2}" width="${st.w * st.mpp}" height="${st.h * st.mpp}" opacity="${st.opacity}" preserveAspectRatio="none"/></g>`).join("");
+  const under = (S.plan.sites || []).filter(st => st.floor === S.floor && (S.siteAlign === st.id || (S.layers.site && !st.hidden)) && photoURL(st)).map(st => {
+    const W = st.w * st.mpp, H = st.h * st.mpp, c = st.crop, clip = c ? `<clipPath id="sc-${st.id}"><rect x="${-W / 2 + c[0] * W}" y="${-H / 2 + c[1] * H}" width="${(c[2] - c[0]) * W}" height="${(c[3] - c[1]) * H}"/></clipPath>` : "";
+    return `<g transform="translate(${st.x} ${st.y}) rotate(${st.rot})" pointer-events="none">${clip}<image href="${esc(photoURL(st))}" x="${-W / 2}" y="${-H / 2}" width="${W}" height="${H}" opacity="${st.opacity}" preserveAspectRatio="none"${c ? ` clip-path="url(#sc-${st.id})"` : ""}/></g>`;
+  }).join("");
   svg.classList.toggle("aligning", !!S.siteAlign);
   svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${grid}${under}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims, keyWalls: S.tab === "totals" && !S.siteAlign ? keyWalls(S.floor) : null })}</g>`;
 }
@@ -2174,7 +2180,7 @@ async function openSite() {
     ${list.length ? `<div class="list">${list.map(st => `<div class="op" data-site="${st.id}"><div class="row"><b class="grow">${esc(st.name || "Site photo")}</b>
         <label class="row" style="gap:4px;font-size:13px"><input type="checkbox" data-sshow ${st.hidden ? "" : "checked"}> Show</label></div>
         <div class="row"><input class="inp" data-sname value="${esc(st.name || "")}" placeholder="Name, e.g. Satellite" style="flex:1;min-width:120px"></div>
-        <div class="row"><button class="btn small primary" data-salign>Line it up</button><button class="btn small" data-sscale>Set the scale</button><button class="btn small danger" data-sdel>Remove</button></div></div>`).join("")}</div>` : ""}
+        <div class="row"><button class="btn small primary" data-salign>Line it up</button><button class="btn small" data-sscale>Set the scale</button><button class="btn small" data-scrop>Crop</button><button class="btn small danger" data-sdel>Remove</button></div></div>`).join("")}</div>` : ""}
     <div class="drop"><span>${list.length ? "Add another, such as the map with boundary lines." : "Take a screenshot with the map's scale bar showing, or include a wall of the house you've measured."}</span><button class="btn ${list.length ? "" : "primary"}" id="sNew">${list.length ? "Add another screenshot" : "Choose a screenshot"}</button></div>
     <p class="note" style="margin:0">Site photos show on the ${esc(S.plan.floors[0].name)} in the 2D plan only. They stay on this device${store.assets ? " with the plan" : ""} and are left out of exports. Turn them all off under Show.</p>`);
   const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
@@ -2196,37 +2202,86 @@ async function openSite() {
     box.querySelector("[data-sname]").onchange = e => edit(() => { st().name = e.target.value.trim().slice(0, 30); });
     box.querySelector("[data-salign]").onclick = () => { m.close(); startSiteAlign(id); };
     box.querySelector("[data-sscale]").onclick = () => { m.close(); calibrateSite(clone(st()), st()); };
+    box.querySelector("[data-scrop]").onclick = () => { m.close(); cropSite(id, false); };
     box.querySelector("[data-sdel]").onclick = async () => { const old = st(); m.close(); edit(() => { S.plan.sites = sites().filter(x => x.id !== id); }); try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } };
   });
 }
 function calibrateSite(ns, old) {
   const url = photoURL(ns); if (!url) { toast("The photo couldn't be loaded."); return; }
   const m = modal("Set the scale", `
-    <p style="margin:0">Tap the two ends of something whose length you know: the map's scale bar, or a wall of the house you've measured. Zoom in on the screenshot first if it's small.</p>
-    <div class="calwrap"><canvas id="calCv"></canvas></div>
+    <p style="margin:0">Mark the two ends of something whose length you know: the map's scale bar, or a wall you've measured. Pinch or use + to zoom in, drag to move around, and drag a dot to fine-tune it.</p>
+    <div class="calwrap"><canvas id="calCv"></canvas><div class="calzoom"><button id="calIn" aria-label="Zoom in">+</button><button id="calOut" aria-label="Zoom out">−</button><button id="calFit" aria-label="Show whole photo" style="font-size:13px">Fit</button></div></div>
     <div class="grid2"><label class="field">Real length between the two points<input class="num" id="calLen" inputmode="decimal" placeholder="${S.plan.units === "ft" ? `e.g. 50'` : "e.g. 20"}"></label><span class="note" id="calPx" style="align-self:end"></span></div>
     <div class="row"><button class="btn" id="calReset">Start again</button><span class="grow"></span><button class="btn primary" id="calGo" disabled>Next: line it up</button></div>`, true);
   const cv = m.el.querySelector("#calCv"), ctx = cv.getContext("2d"), img = new Image(), pts = [];
+  const V = { s: 1, x: 0, y: 0 }; // canvas px = image px * s + (x, y)
+  const dpr = () => window.devicePixelRatio || 1;
+  const size = () => { const r = cv.getBoundingClientRect(), w = Math.round(r.width * dpr()), h = Math.round(r.height * dpr()); if (w && h && (cv.width !== w || cv.height !== h)) { cv.width = w; cv.height = h; } };
+  const fit = () => { size(); if (!img.naturalWidth) return; V.s = Math.min(cv.width / img.naturalWidth, cv.height / img.naturalHeight); V.x = (cv.width - img.naturalWidth * V.s) / 2; V.y = (cv.height - img.naturalHeight * V.s) / 2; };
+  const toImg = (cx, cy) => [(cx - V.x) / V.s, (cy - V.y) / V.s];
+  const toCv = q => [q[0] * V.s + V.x, q[1] * V.s + V.y];
+  const evCv = e => { const b = cv.getBoundingClientRect(); return [(e.clientX - b.left) * cv.width / b.width, (e.clientY - b.top) * cv.height / b.height]; };
+  const zoomAt = (f, cx, cy) => { const min = Math.min(cv.width / img.naturalWidth, cv.height / img.naturalHeight) * 0.5, s2 = Math.max(min, Math.min(V.s * f, 12 * dpr())); f = s2 / V.s; V.x = cx - (cx - V.x) * f; V.y = cy - (cy - V.y) * f; V.s = s2; };
   const draw = () => {
-    ctx.drawImage(img, 0, 0, cv.width, cv.height);
-    const lw = Math.max(2, cv.width / 400);
-    ctx.strokeStyle = "#ff3b30"; ctx.fillStyle = "#ff3b30"; ctx.lineWidth = lw;
-    if (pts.length === 2) { ctx.beginPath(); ctx.moveTo(...pts[0]); ctx.lineTo(...pts[1]); ctx.stroke(); }
-    for (const q of pts) { ctx.beginPath(); ctx.arc(q[0], q[1], lw * 3, 0, 7); ctx.fill(); }
+    size();
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
+    if (img.naturalWidth) { ctx.imageSmoothingEnabled = V.s < 2; ctx.drawImage(img, V.x, V.y, img.naturalWidth * V.s, img.naturalHeight * V.s); }
+    const d = dpr(), c = pts.map(toCv);
+    ctx.lineWidth = 2 * d;
+    if (c.length === 2) { ctx.strokeStyle = "#ff3b30"; ctx.beginPath(); ctx.moveTo(...c[0]); ctx.lineTo(...c[1]); ctx.stroke(); }
+    for (const q of c) { // ring with a crosshair so the exact point stays visible
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 4 * d; ctx.beginPath(); ctx.arc(q[0], q[1], 9 * d, 0, 7); ctx.stroke();
+      ctx.strokeStyle = "#ff3b30"; ctx.lineWidth = 2 * d; ctx.beginPath(); ctx.arc(q[0], q[1], 9 * d, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(q[0] - 14 * d, q[1]); ctx.lineTo(q[0] - 4 * d, q[1]); ctx.moveTo(q[0] + 4 * d, q[1]); ctx.lineTo(q[0] + 14 * d, q[1]); ctx.moveTo(q[0], q[1] - 14 * d); ctx.lineTo(q[0], q[1] - 4 * d); ctx.moveTo(q[0], q[1] + 4 * d); ctx.lineTo(q[0], q[1] + 14 * d); ctx.stroke();
+    }
     const L = parseLen(m.el.querySelector("#calLen").value);
     m.el.querySelector("#calGo").disabled = !(pts.length === 2 && L && L > 0.5);
-    m.el.querySelector("#calPx").textContent = pts.length === 2 ? "Line drawn. Now type its real length." : pts.length ? "Now tap the other end." : "Tap the first end.";
+    m.el.querySelector("#calPx").textContent = pts.length === 2 ? "Drag a dot to fine-tune, then type the real length." : pts.length ? "Now tap the other end." : "Tap the first end.";
   };
-  img.onload = () => { cv.width = img.naturalWidth; cv.height = img.naturalHeight; draw(); };
+  img.onload = () => { fit(); draw(); };
   img.src = url;
+  // gestures: tap = place a dot, drag a dot = move it, drag elsewhere = pan, two fingers = pinch zoom, wheel = zoom
+  const down = new Map(); let g = null;
+  const nearDot = c => { let best = -1, bd = 28 * dpr(); pts.forEach((q, i) => { const p = toCv(q), dd = Math.hypot(p[0] - c[0], p[1] - c[1]); if (dd < bd) { bd = dd; best = i; } }); return best; };
   cv.addEventListener("pointerdown", e => {
-    const b = cv.getBoundingClientRect(), q = [(e.clientX - b.left) * cv.width / b.width, (e.clientY - b.top) * cv.height / b.height];
-    if (pts.length === 2) pts.length = 0; pts.push(q); draw();
+    e.preventDefault(); cv.setPointerCapture(e.pointerId);
+    const c = evCv(e); down.set(e.pointerId, c);
+    if (down.size === 2) { const [a, b] = [...down.values()]; g = { kind: "pinch", d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }; return; }
+    if (down.size > 2) return;
+    const i = nearDot(c);
+    g = i >= 0 ? { kind: "dot", i, start: c, off: [toCv(pts[i])[0] - c[0], toCv(pts[i])[1] - c[1]], moved: false } : { kind: "pan", start: c, last: c, moved: false };
   });
+  cv.addEventListener("pointermove", e => {
+    if (!down.has(e.pointerId) || !g) return;
+    const c = evCv(e); down.set(e.pointerId, c);
+    if (g.kind === "pinch") {
+      if (down.size < 2) return;
+      const [a, b] = [...down.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]), mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      V.x += mid[0] - g.m[0]; V.y += mid[1] - g.m[1]; if (g.d > 0) zoomAt(d / g.d, mid[0], mid[1]);
+      g.d = d; g.m = mid; draw(); return;
+    }
+    if (Math.hypot(c[0] - g.start[0], c[1] - g.start[1]) > 8 * dpr()) g.moved = true;
+    if (g.kind === "dot" && g.moved) { pts[g.i] = toImg(c[0] + g.off[0], c[1] + g.off[1]); draw(); }
+    else if (g.kind === "pan" && g.moved) { V.x += c[0] - g.last[0]; V.y += c[1] - g.last[1]; g.last = c; draw(); }
+  });
+  const up = e => {
+    if (!down.has(e.pointerId)) return;
+    const c = down.get(e.pointerId); down.delete(e.pointerId);
+    if (!g) return;
+    if (g.kind === "pinch") { if (!down.size) g = null; else g = { kind: "pan", start: [...down.values()][0], last: [...down.values()][0], moved: true }; return; }
+    if (e.type === "pointerup" && !g.moved && g.kind === "pan" && pts.length < 2) { pts.push(toImg(...c)); draw(); }
+    g = null;
+  };
+  cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+  cv.addEventListener("wheel", e => { e.preventDefault(); const c = evCv(e); zoomAt(Math.exp(-e.deltaY * 0.0015), c[0], c[1]); draw(); }, { passive: false });
+  const zoomBtn = f => { zoomAt(f, cv.width / 2, cv.height / 2); draw(); };
+  m.el.querySelector("#calIn").onclick = () => zoomBtn(2);
+  m.el.querySelector("#calOut").onclick = () => zoomBtn(0.5);
+  m.el.querySelector("#calFit").onclick = () => { fit(); draw(); };
   m.el.querySelector("#calLen").addEventListener("input", draw);
   m.el.querySelector("#calReset").onclick = () => { pts.length = 0; draw(); };
   m.el.querySelector("#calGo").onclick = () => {
-    const L = parseLen(m.el.querySelector("#calLen").value), px = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) * ns.w / cv.width;
+    const L = parseLen(m.el.querySelector("#calLen").value), px = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) * ns.w / img.naturalWidth;
     ns.mpp = L / px;
     if (!old) { // new photo: start it over the last site photo, or the middle of this floor's rooms
       const prev = sites()[sites().length - 1], rs = roomsOn(ns.floor), b = rs.length ? bbox(rs.flatMap(r => r.pts)) : null;
@@ -2236,8 +2291,60 @@ function calibrateSite(ns, old) {
     const before = JSON.stringify(S.plan);
     if (old) Object.assign(old, { mpp: ns.mpp }); else sites().push(ns);
     commit(before);
-    startSiteAlign(ns.id);
+    if (old) startSiteAlign(ns.id); else cropSite(ns.id, true);
   };
+}
+/* crop a site photo to the part that matters; the scale is unchanged because the crop is stored as fractions of the photo */
+function cropSite(id, thenAlign) {
+  const st = sites().find(x => x.id === id), url = st && photoURL(st); if (!url) return;
+  const m = modal("Crop the photo", `
+    <p style="margin:0">Drag the corners (or the middle of the box) to keep just your section. The scale you set stays the same.</p>
+    <div class="calwrap"><canvas id="crCv"></canvas></div>
+    <div class="row"><button class="btn" id="crAll">Use whole photo</button><span class="grow"></span><button class="btn primary" id="crGo">${thenAlign ? "Next: line it up" : "Save crop"}</button></div>`, true);
+  const cv = m.el.querySelector("#crCv"), ctx = cv.getContext("2d"), img = new Image();
+  let c = (st.crop || [0, 0, 1, 1]).slice(), V = { s: 1, x: 0, y: 0 }, g = null;
+  const d = () => window.devicePixelRatio || 1;
+  const layout = () => { const r = cv.getBoundingClientRect(); cv.width = Math.round(r.width * d()); cv.height = Math.round(r.height * d()); const pad = 16 * d(); V.s = Math.min((cv.width - 2 * pad) / img.naturalWidth, (cv.height - 2 * pad) / img.naturalHeight); V.x = (cv.width - img.naturalWidth * V.s) / 2; V.y = (cv.height - img.naturalHeight * V.s) / 2; };
+  const box = () => { const W = img.naturalWidth * V.s, H = img.naturalHeight * V.s; return [V.x + c[0] * W, V.y + c[1] * H, V.x + c[2] * W, V.y + c[3] * H]; };
+  const draw = () => {
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.drawImage(img, V.x, V.y, img.naturalWidth * V.s, img.naturalHeight * V.s);
+    const [x0, y0, x1, y1] = box();
+    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.beginPath(); ctx.rect(0, 0, cv.width, cv.height); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.fill("evenodd");
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 * d(); ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    const h = 9 * d(); ctx.fillStyle = "#fff"; for (const [x, y] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) ctx.fillRect(x - h, y - h, 2 * h, 2 * h);
+  };
+  img.onload = () => { layout(); draw(); };
+  img.src = url;
+  const ev = e => { const b = cv.getBoundingClientRect(); return [(e.clientX - b.left) * cv.width / b.width, (e.clientY - b.top) * cv.height / b.height]; };
+  cv.addEventListener("pointerdown", e => {
+    e.preventDefault(); cv.setPointerCapture(e.pointerId);
+    const p = ev(e), [x0, y0, x1, y1] = box(), r = 30 * d();
+    const corner = [[0, 1], [2, 1], [0, 3], [2, 3]].find(([i, j]) => Math.hypot(p[0] - [x0, y0, x1, y1][i], p[1] - [x0, y0, x1, y1][j]) < r);
+    g = corner ? { k: "corner", i: corner[0], j: corner[1] } : (p[0] > x0 && p[0] < x1 && p[1] > y0 && p[1] < y1) ? { k: "move", p, c0: c.slice() } : null;
+  });
+  cv.addEventListener("pointermove", e => {
+    if (!g) return;
+    const p = ev(e), W = img.naturalWidth * V.s, H = img.naturalHeight * V.s, fx = Math.max(0, Math.min(1, (p[0] - V.x) / W)), fy = Math.max(0, Math.min(1, (p[1] - V.y) / H)), min = 0.05;
+    if (g.k === "corner") {
+      if (g.i === 0) c[0] = Math.min(fx, c[2] - min); else c[2] = Math.max(fx, c[0] + min);
+      if (g.j === 1) c[1] = Math.min(fy, c[3] - min); else c[3] = Math.max(fy, c[1] + min);
+    } else {
+      let dx = (p[0] - g.p[0]) / W, dy = (p[1] - g.p[1]) / H;
+      dx = Math.max(-g.c0[0], Math.min(1 - g.c0[2], dx)); dy = Math.max(-g.c0[1], Math.min(1 - g.c0[3], dy));
+      c = [g.c0[0] + dx, g.c0[1] + dy, g.c0[2] + dx, g.c0[3] + dy];
+    }
+    draw();
+  });
+  const end = () => { g = null; }; cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
+  const save = crop => {
+    const before = JSON.stringify(S.plan), full = !crop || (crop[0] < 0.005 && crop[1] < 0.005 && crop[2] > 0.995 && crop[3] > 0.995);
+    if (full) delete st.crop; else st.crop = crop.map(v => Math.round(v * 10000) / 10000);
+    commit(before); m.close();
+    if (thenAlign) startSiteAlign(id); else renderPlan();
+  };
+  m.el.querySelector("#crAll").onclick = () => save(null);
+  m.el.querySelector("#crGo").onclick = () => save(c);
 }
 function startSiteAlign(id) {
   const st = sites().find(x => x.id === id); if (!st) return;
