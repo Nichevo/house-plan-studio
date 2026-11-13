@@ -160,6 +160,7 @@ table.tot tr.sum td{font-weight:600;border-bottom:0}
 .dim.unk{fill:var(--warn)}
 .edge-hit{stroke:transparent;cursor:grab}
 .vtx-hit{fill:transparent;cursor:move}
+.opn-hit{stroke:transparent;cursor:ew-resize}
 .vtx{fill:var(--sel);stroke:var(--panel);pointer-events:none}
 .knob{fill:var(--panel);stroke:var(--sel);pointer-events:none}
 .out{fill:var(--garden);cursor:move}
@@ -522,7 +523,9 @@ function itemFrame(room, it) {
   const e = edges(room)[it.wall] || edges(room)[0], t = isOut(room) ? 0 : S.plan.wallT / 2;
   const b = [e.a[0] + e.d[0] * it.along + e.n[0] * (t + it.out), e.a[1] + e.d[1] * it.along + e.n[1] * (t + it.out)];
   const p1 = [b[0] + e.d[0] * it.w, b[1] + e.d[1] * it.w], p2 = [p1[0] + e.n[0] * it.d, p1[1] + e.n[1] * it.d], p3 = [b[0] + e.n[0] * it.d, b[1] + e.n[1] * it.d];
-  return { pts: [b, p1, p2, p3], c: [(b[0] + p2[0]) / 2, (b[1] + p2[1]) / 2], e };
+  const c = [(b[0] + p2[0]) / 2, (b[1] + p2[1]) / 2], a = (it.rot || 0) * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a);
+  const rot = q => a ? [c[0] + (q[0] - c[0]) * cs - (q[1] - c[1]) * sn, c[1] + (q[0] - c[0]) * sn + (q[1] - c[1]) * cs] : q;
+  return { pts: [b, p1, p2, p3].map(rot), c, e };
 }
 function clampItem(room, it) {
   const es = edges(room); if (!es[it.wall]) it.wall = 0;
@@ -765,7 +768,7 @@ function planMarkup(fid, o) {
     out.push(`<polygon class="itm ${ly}" data-item="${r.id}:${it.id}" points="${f.pts.join(" ")}" stroke-width="${1 / k}"/>`);
     if (it.type === "tree" || it.type === "bush") out.push(`<circle class="itm gard" cx="${f.c[0]}" cy="${f.c[1]}" r="${Math.min(it.w, it.d) / 2}" stroke-width="${1 / k}" pointer-events="none"/>`);
     if (Math.min(it.w, it.d) * k > 22 || Math.max(it.w, it.d) * k > 60) {
-      let ang = Math.atan2(f.e.d[1], f.e.d[0]) * 180 / Math.PI; if (it.d > it.w * 1.6) ang += 90; if (ang > 90) ang -= 180; if (ang <= -90) ang += 180;
+      let ang = Math.atan2(f.e.d[1], f.e.d[0]) * 180 / Math.PI + (it.rot || 0); if (it.d > it.w * 1.6) ang += 90; if (ang > 90) ang -= 180; if (ang <= -90) ang += 180;
       const lab = it.label.length > 16 ? it.label.slice(0, 15) + "…" : it.label;
       out.push(`<text class="ilbl" x="${f.c[0]}" y="${f.c[1]}" font-size="${fs * 0.72}" transform="rotate(${ang} ${f.c[0]} ${f.c[1]})">${esc(lab)}</text>`);
     }
@@ -809,6 +812,7 @@ function planMarkup(fid, o) {
       const m = [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2];
       out.push(`<circle class="knob" cx="${m[0]}" cy="${m[1]}" r="${5.5 / k}" stroke-width="${2 / k}"/>`);
     }
+    if (S.canWrite) { const es = edges(sr); for (const op of sr.openings) { if (op.type === "open") continue; const e = es[op.edge]; if (!e) continue; const A = [e.a[0] + e.d[0] * op.offset, e.a[1] + e.d[1] * op.offset], B = [e.a[0] + e.d[0] * (op.offset + op.width), e.a[1] + e.d[1] * (op.offset + op.width)]; out.push(`<line class="opn-hit" data-opn="${op.id}" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke-width="${24 / k}"/>`); } }
     if (S.vtxAngle) { const c = centroid(sr.pts); S.vtxAngle.forEach((a, i) => { const q = sr.pts[i], d = Math.hypot(c[0] - q[0], c[1] - q[1]) || 1, x = q[0] + (c[0] - q[0]) / d * 0.45, y = q[1] + (c[1] - q[1]) / d * 0.45; out.push(`<text x="${x}" y="${y}" font-size="${12 / k}" font-weight="700" text-anchor="middle" dominant-baseline="middle" fill="var(--sel)" pointer-events="none">${a}°</text>`); }); }
     if (S.canWrite) sr.pts.forEach((q, i) => out.push(`<circle class="vtx-hit" data-vtx="${i}" cx="${q[0]}" cy="${q[1]}" r="${15 / k}"/><rect class="vtx" x="${q[0] - 5 / k}" y="${q[1] - 5 / k}" width="${10 / k}" height="${10 / k}" stroke-width="${1.5 / k}"/>`));
   }
@@ -886,6 +890,8 @@ svg.addEventListener("pointerdown", e => {
   if (alignSite()) { const st = alignSite(); drag = { type: "site", sc: [e.clientX, e.clientY], p0: toM(e.clientX, e.clientY), start: [st.x, st.y], before: JSON.stringify(S.plan), moved: false }; return; }
   const vtxEl = e.target.closest("[data-vtx]");
   if (vtxEl && S.canWrite && selRoom()) { const r = selRoom(); drag = { type: "vtx", i: +vtxEl.dataset.vtx, id: r.id, start: clone(r.pts), p0: toM(e.clientX, e.clientY), sc: [e.clientX, e.clientY], before: JSON.stringify(S.plan), moved: false }; return; }
+  const opnEl = e.target.closest("[data-opn]");
+  if (opnEl && S.canWrite && selRoom()) { const r = selRoom(), op = r.openings.find(x => x.id === opnEl.dataset.opn); if (op) { drag = { type: "opn", id: r.id, oid: op.id, start: op.offset, p0: toM(e.clientX, e.clientY), sc: [e.clientX, e.clientY], before: JSON.stringify(S.plan), moved: false }; return; } }
   const edgeEl = e.target.closest("[data-edge]"), roomEl = e.target.closest("[data-room]"), camEl = e.target.closest("[data-photo]"), itemEl = e.target.closest("[data-item]");
   const p0 = toM(e.clientX, e.clientY), sc = [e.clientX, e.clientY];
   if (camEl) { const [rid, pid] = camEl.dataset.photo.split(":"); drag = null; pointers.delete(e.pointerId); openPhotoViewer(rid, pid); return; }
@@ -932,6 +938,10 @@ svg.addEventListener("pointermove", e => {
   if (drag.type === "site") { const st = alignSite(); if (!st) return; const p = toM(e.clientX, e.clientY); st.x = r2(drag.start[0] + p[0] - drag.p0[0]); st.y = r2(drag.start[1] + p[1] - drag.p0[1]); renderPlan(); return; }
   const r = S.plan.rooms.find(x => x.id === drag.id); if (!r) return;
   const p = toM(e.clientX, e.clientY), dx = p[0] - drag.p0[0], dy = p[1] - drag.p0[1], thr = Math.max(0.06, 10 / S.k), grid = S.k > 60 ? 0.05 : 0.1;
+  if (drag.type === "opn") {
+    const op = r.openings.find(x => x.id === drag.oid), e0 = op && edges(r)[op.edge]; if (!e0) return;
+    op.offset = Math.round((drag.start + dx * e0.d[0] + dy * e0.d[1]) / 0.05) * 0.05; clampOpening(r, op); op.offset = r2(op.offset); renderPlan(); return;
+  }
   if (drag.type === "vtx") {
     const q = [drag.start[drag.i][0] + dx, drag.start[drag.i][1] + dy], pts = moveCorner(r, drag.start, drag.i, q, thr);
     if (pts) { r.pts = pts; S.vtxAngle = cornerAngles(pts); }
@@ -975,6 +985,7 @@ function endPointer(e) {
   if (d.type === "pan" && !d.moved) { if (S.sel) { S.sel = null; if (S.tab === "room") S.tab = "rooms"; renderAll(); } return; }
   if (d.type === "item") { if (d.moved) commit(d.before); else renderPane(); return; }
   if (d.type === "site" || d.type === "fac" || d.type === "sroom") { if (d.moved) commit(d.before); return; }
+  if (d.type === "opn") { if (d.moved) commit(d.before); return; }
   if (d.type === "vtx") {
     S.vtxAngle = null;
     const r = S.plan.rooms.find(x => x.id === d.id);
@@ -1097,6 +1108,8 @@ function renderRoom() {
         <label class="field">Width<input class="num" data-if="w" value="${esc(fmtIn(it.w))}" ${ro ? "disabled" : ""}></label>
         <label class="field">Depth<input class="num" data-if="d" value="${esc(fmtIn(it.d))}" ${ro ? "disabled" : ""}></label>
         <label class="field">Height<input class="num" data-if="h" value="${esc(fmtIn(it.h))}" ${ro ? "disabled" : ""}></label>
+        <label class="field">Angle<input class="num" data-if="rot" inputmode="decimal" value="${Math.round((it.rot || 0) * 10) / 10}°" ${ro ? "disabled" : ""}></label>
+        ${ro ? "" : `<div class="row" style="grid-column:1/-1"><span class="note" style="margin:0">Turn</span><button class="btn small" data-irot="-45">−45°</button><button class="btn small" data-irot="-15">−15°</button><button class="btn small" data-irot="15">+15°</button><button class="btn small" data-irot="45">+45°</button></div>`}
       </div></div>`).join("") || `<div class="empty">${out ? "Add a shed, trees, a patio or anything else in this space." : "Nothing added yet. Use Find in photos, or pick from the list."} Drag items on the plan to move them.</div>`}
   </div>
   <div class="sec" ${out ? "hidden" : ""}>
@@ -1146,6 +1159,7 @@ function bindRoom(r) {
   on("#aiItems", "click", () => estimateRoom(id, { itemsOnly: true }));
   pane.querySelectorAll("[data-it]").forEach(box => {
     const iid = box.dataset.it;
+    box.querySelectorAll("[data-irot]").forEach(b => b.onclick = () => edit(() => { const it = R().items.find(x => x.id === iid); if (it) { it.rot = ((((it.rot || 0) + +b.dataset.irot) % 360) + 540) % 360 - 180; S.selItem = iid; } }));
     box.querySelectorAll("[data-if]").forEach(el => el.addEventListener("change", () => {
       const f = el.dataset.if;
       edit(() => {
@@ -1153,6 +1167,7 @@ function bindRoom(r) {
         if (f === "label") it.label = el.value.trim().slice(0, 40) || it.label;
         else if (f === "on") it.on = el.checked;
         else if (f === "wall") it.wall = +el.value;
+        else if (f === "rot") { const v = parseFloat(el.value); if (isFinite(v)) it.rot = ((v % 360) + 540) % 360 - 180; else toast("Type an angle in degrees, such as 45."); }
         else { const v = parseLen(el.value); if (v != null && v >= 0 && v < 30) it[f] = v; else toast("That length wasn't understood."); }
         clampItem(rr, it);
       });
@@ -1442,7 +1457,7 @@ function build3D(opts) {
       const rg = new THREE.Group(); rg.name = r.name;
       const addItems = () => { for (const it of r.items || []) {
         if (!layerOn(L, it)) continue;
-        const fr = itemFrame(r, it), ang = Math.atan2(-fr.e.d[1], fr.e.d[0]);
+        const fr = itemFrame(r, it), ang = Math.atan2(-fr.e.d[1], fr.e.d[0]) - (it.rot || 0) * Math.PI / 180;
         if (it.type === "tree") {
           const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, it.h * 0.45, 10), itemMats.gard); trunk.position.set(fr.c[0], elev + it.h * 0.225, fr.c[1]); trunk.name = it.label + " trunk"; rg.add(trunk);
           const crown = new THREE.Mesh(new THREE.SphereGeometry(Math.min(it.w, it.d) / 2, 16, 12), specMats.leaf ||= new THREE.MeshStandardMaterial({ color: 0x4F7F3A, roughness: 0.9 }));
