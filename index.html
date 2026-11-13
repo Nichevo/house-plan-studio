@@ -514,6 +514,7 @@ function parseLen(str) {
   return null;
 }
 
+const SIDE_LABEL = { S: "Front", N: "Back", W: "Left side", E: "Right side" };
 /* ---------- geometry ---------- */
 function shoelace(p) { let s = 0; for (let i = 0; i < p.length; i++) { const a = p[i], b = p[(i + 1) % p.length]; s += a[0] * b[1] - b[0] * a[1]; } return s; }
 const area = p => Math.abs(shoelace(p)) / 2;
@@ -1214,11 +1215,17 @@ function renderRooms() {
   if (sp.length) {
     const opts = S.plan.rooms.map(x => `<option value="${x.id}">${esc(x.name)}${S.plan.floors.length > 1 ? ` (${esc(floorOf(x).name)})` : ""}</option>`).join("");
     parts.push(`<div class="sec"><h2>Spare photos · ${sp.length}</h2><p class="note" style="margin:0 0 6px">Photos kept aside, not in any room. Move one into a room when you know where it belongs.</p><div class="photos">${sp.map(p => { const u = photoURL(p); return `<div class="ph" data-sp="${p.id}">${u ? `<img src="${esc(u)}" alt="${esc(p.name)}" data-spview="${p.id}" loading="lazy">` : `<div class="missing">${p.local ? "Saved on another device" : "Loading…"}</div>`}
-      ${S.canWrite ? `<select data-spmove="${p.id}" aria-label="Move to a room"><option value="">Move to…</option>${opts}</select><div class="acts"><button data-spdel="${p.id}">Delete</button></div>` : ""}${p.from ? `<small class="muted" style="padding:2px 6px;font-size:11px">From ${esc(p.from)}</small>` : ""}</div>`; }).join("")}</div><div id="spConfirm"></div></div>`);
+      ${S.canWrite ? `<select data-spmove="${p.id}" aria-label="Move to a room"><option value="">Move to…</option><optgroup label="Rooms">${opts}</optgroup><optgroup label="House sides">${Object.entries(SIDE_LABEL).map(([k, v]) => `<option value="side:${k}">${v} photo${facades()[k] ? " (swap)" : ""}</option>`).join("")}</optgroup></select><div class="acts"><button data-spdel="${p.id}">Delete</button></div>` : ""}${p.from ? `<small class="muted" style="padding:2px 6px;font-size:11px">From ${esc(p.from)}</small>` : ""}</div>`; }).join("")}</div><div id="spConfirm"></div></div>`);
   }
   parts.push(`<p class="note">Walls counts how many walls have a photo tagged to them. Measured means at least one wall in each direction has a real measurement.</p>`);
   pane.innerHTML = parts.join("");
   pane.querySelectorAll("[data-spmove]").forEach(el => el.onchange = () => {
+    if (el.value.startsWith("side:")) {
+      const side = el.value.slice(5), p = S.plan.spare.find(x => x.id === el.dataset.spmove); if (!p) return;
+      if (!photoURL(p)) { toast("That photo is stored on another device."); el.value = ""; return; }
+      placeFacade({ id: p.id, side, w: p.w, h: p.h, ...(p.asset ? { asset: p.asset } : {}), ...(p.local ? { local: true } : {}), mpp: 0.01, u: 0, z: 0, opacity: 0.75 }, side);
+      el.value = ""; return;
+    }
     const to = S.plan.rooms.find(x => x.id === el.value); if (!to) return;
     edit(() => { const p = S.plan.spare.find(x => x.id === el.dataset.spmove); if (!p) return; S.plan.spare = S.plan.spare.filter(x => x !== p); const { from, ...ph } = p; to.photos.push({ ...ph, wall: null }); });
     toast(`Moved to ${to.name}. Tag which wall it shows on the Room tab.`);
@@ -2773,25 +2780,32 @@ function renderSideBar() {
   on("facMove", () => { S.facMove = !S.facMove; renderAll(); });
   on("facScale", () => calibrateSite(clone(f), f, { intro: facIntro, done: mpp => { const before = JSON.stringify(S.plan); f.mpp = mpp; commit(before); fitSide(); renderAll(); } }));
   on("facCrop", () => cropPhoto(f, "Save crop", () => renderAll()));
-  on("facDel", async () => { const old = f; edit(() => { delete facades()[S.side]; S.facMove = false; }); try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } });
+  on("facDel", () => { const old = f; edit(() => { delete facades()[S.side]; S.facMove = false; facadeToSpare(old); }); toast("Moved to Spare photos, on the Rooms tab. Delete it there to remove it for good.", 5000); });
+}
+/* a house-side photo that's taken off or replaced is kept in Spare photos */
+function facadeToSpare(f) { if (!f) return; (S.plan.spare ||= []).push({ id: f.id, name: `${SIDE_LABEL[f.side] || "Side"} of the house`, w: f.w, h: f.h, ...(f.asset ? { asset: f.asset } : {}), ...(f.local ? { local: true } : {}), wall: null, from: `${SIDE_LABEL[f.side] || "House side"} photo` }); }
+/* scale, crop and line up a new photo for one side of the house */
+function placeFacade(ns, side) {
+  const old = facades()[side], w = ns.w, h = ns.h;
+  const placed = mpp => {
+    const ext = sideExtent(side), before = JSON.stringify(S.plan);
+    ns.mpp = mpp; ns.u = r2((ext.u0 + ext.u1) / 2); ns.z = r2(h * mpp / 2 - 0.3);
+    if (S.plan.spare) S.plan.spare = S.plan.spare.filter(x => x.id !== ns.id);
+    facades()[side] = ns; if (old && old.id !== ns.id) facadeToSpare(old); commit(before);
+    cropPhoto(ns, "Next: line it up", () => { S.side = side; S.facMove = true; if (S.view !== "side") setView("side"); fitSide(); renderAll(); });
+  };
+  calibrateSite(ns, null, { intro: facIntro, done: placed, skip: "Size it by eye", onSkip: () => { const ext = sideExtent(side); placed(Math.max(4, ext.u1 - ext.u0) * 1.25 / w); toast("Now stretch it with the Size buttons until the house's corners match the rooms.", 6000); } });
 }
 const facIntro = "Mark the two ends of something whose size you know: the front door's height (usually about 2.0 m), a window you've measured, or the length of a wall.";
 const facadeInput = document.createElement("input"); facadeInput.type = "file"; facadeInput.accept = "image/*";
 facadeInput.onchange = async () => {
   const file = facadeInput.files[0]; facadeInput.value = ""; if (!file) return;
   try {
-    const { blob, w, h } = await downscale(file, 3000, 0.88), side = S.side, old = facades()[side];
+    const { blob, w, h } = await downscale(file, 3000, 0.88), side = S.side;
     const ns = { id: uid(), side, w, h, mpp: 0.01, u: 0, z: 0, opacity: 0.75 };
     if (store.assets) { const up = await store.assets.upload(blob, { type: "image/jpeg" }); ns.asset = up.id; }
     else { await idb.put(ns.id, blob); localPhotoURL[ns.id] = URL.createObjectURL(blob); ns.local = true; }
-    const placed = mpp => {
-      const ext = sideExtent(side), before = JSON.stringify(S.plan);
-      ns.mpp = mpp; ns.u = r2((ext.u0 + ext.u1) / 2); ns.z = r2(h * mpp / 2 - 0.3);
-      facades()[side] = ns; commit(before);
-      if (old) { (async () => { try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } })(); }
-      cropPhoto(ns, "Next: line it up", () => { S.side = side; S.facMove = true; if (S.view !== "side") setView("side"); fitSide(); renderAll(); });
-    };
-    calibrateSite(ns, null, { intro: facIntro, done: placed, skip: "Size it by eye", onSkip: () => { const ext = sideExtent(side); placed(Math.max(4, ext.u1 - ext.u0) * 1.25 / w); toast("Now stretch it with the Size buttons until the house's corners match the rooms.", 6000); } });
+    placeFacade(ns, side);
   } catch (e) { toast((e && e.message) || "That image couldn't be used."); }
 };
 $("#sideTabs").addEventListener("click", e => { const b = e.target.closest("[data-side]"); if (!b) return; S.side = b.dataset.side; S.facMove = false; fitSide(); renderAll(); });
@@ -2862,7 +2876,7 @@ function walkNext() {
   w.room = c.room.id; w.wall = c.wall; S.sel = c.room.id; S.selItem = null;
   const left = keyWalls(S.floor, 200).filter(x => !w.skip.has(x.room.id + ":" + x.wall)).length;
   $("#walkTitle").textContent = `Measuring walk · ${c.room.name}`;
-  $("#walkNote").textContent = `${c.name}, shown in orange: about ${fmtLen(c.len)} on the plan. Measure along the floor from corner to corner, inside the room. ${left > 1 ? `Up to ${left} walls to go.` : "Last one."}`;
+  $("#walkNote").textContent = `${c.name}, shown in orange: about ${fmtLen(c.len)} on the plan. Measure along the floor from corner to corner, inside the room. ${left > 1 ? `About ${left} more to go on this floor.` : "Last one."}`;
   const inp = $("#walkLen"); inp.value = ""; inp.placeholder = S.plan.units === "ft" ? `e.g. 12' 6"` : "e.g. 3.85";
   const r = c.room, b = bbox(r.pts), W = svg.clientWidth, H = svg.clientHeight, k = Math.max(2, Math.min(400, Math.min(W / (b.w + 3), (H - 200) / (b.h + 3))));
   S.k = k; S.tx = W / 2 - (b.x0 + b.w / 2) * k; S.ty = (H - 160) / 2 - (b.y0 + b.h / 2) * k;
