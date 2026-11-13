@@ -1472,6 +1472,52 @@ function keyWalls(fid, n = 5) {
   }
   return out;
 }
+/* small gaps (and slight overlaps) between walls that should be back to back: [{ r, e, B, f, gap }] */
+function gapPairs(fid, max = 0.6) {
+  const out = [], rs = roomsOn(fid).filter(r => !isOut(r));
+  for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
+    const r = rs[i], B = rs[j];
+    for (const e of edges(r)) for (const f of edges(B)) {
+      if (e.n[0] * f.n[0] + e.n[1] * f.n[1] > -0.99) continue;
+      const gap = (f.a[0] - e.a[0]) * -e.n[0] + (f.a[1] - e.a[1]) * -e.n[1];
+      if (Math.abs(gap) < 0.01 || gap > max || gap < -0.3) continue;
+      let u0 = (f.a[0] - e.a[0]) * e.d[0] + (f.a[1] - e.a[1]) * e.d[1], u1 = (f.b[0] - e.a[0]) * e.d[0] + (f.b[1] - e.a[1]) * e.d[1];
+      if (u0 > u1) [u0, u1] = [u1, u0];
+      if (Math.min(e.len, u1) - Math.max(0, u0) < 0.3) continue;
+      out.push({ r, e: e.i, B, f: f.i, gap });
+    }
+  }
+  return out;
+}
+/* push one wall of each gap across so the two rooms sit back to back; walls next to tape-measured ones stay put */
+function closeGaps(fid) {
+  const before = JSON.stringify(S.plan); let moved = 0, stuck = 0; const done = new Set();
+  const fixedBy = (room, i) => { const n = room.pts.length; return !!(room.measured[(i + n - 1) % n] || room.measured[(i + 1) % n]); };
+  const tryMove = (room, i, dist) => {
+    if (fixedBy(room, i)) return false;
+    const e = edges(room)[i], n = room.pts.length, pts = room.pts.map(p => p.slice());
+    for (const k of [i, (i + 1) % n]) pts[k] = [r2(pts[k][0] - e.n[0] * dist), r2(pts[k][1] - e.n[1] * dist)];
+    if (edges({ pts }).some(x => x.len < 0.3) || shoelace(pts) <= 0) return false;
+    const old = edges(room); room.pts = pts; const ne = edges(room);
+    room.openings.forEach(o => clampOpening(room, o)); (room.items || []).forEach(it => clampItem(room, it));
+    return true;
+  };
+  for (let pass = 0; pass < 3; pass++) {
+    const list = gapPairs(fid); if (!list.length) break;
+    let any = false;
+    for (const g of list) {
+      const key = [g.r.id, g.e, g.B.id, g.f].join(); if (done.has(key)) continue;
+      // recheck after earlier moves
+      const e = edges(g.r)[g.e], f = edges(g.B)[g.f]; if (!e || !f) continue;
+      const gap = (f.a[0] - e.a[0]) * -e.n[0] + (f.a[1] - e.a[1]) * -e.n[1]; if (Math.abs(gap) < 0.01) { done.add(key); continue; }
+      const order = Object.keys(g.r.measured).length > Object.keys(g.B.measured).length || (Object.keys(g.r.measured).length === Object.keys(g.B.measured).length && area(g.r.pts) > area(g.B.pts)) ? [[g.B, g.f], [g.r, g.e]] : [[g.r, g.e], [g.B, g.f]];
+      if (order.some(([room, i]) => tryMove(room, i, gap))) { moved++; any = true; done.add(key); } else if (pass === 0) { stuck++; done.add(key); }
+    }
+    if (!any) break;
+  }
+  if (moved) commit(before);
+  toast(moved ? `Closed ${moved} gap${moved > 1 ? "s" : ""} between rooms.${stuck ? ` ${stuck} more sit between tape-measured walls, so they were left for you to check.` : ""} Undo puts them back.` : stuck ? "The gaps left are between tape-measured walls, so nothing was moved. Check those measurements." : "No gaps to close on this floor.", 6000);
+}
 function findGaps() {
   const g = [], cuts = computeCuts(S.plan);
   for (const f of S.plan.floors) {
@@ -1525,6 +1571,7 @@ function renderTotals() {
   </div>
   <div class="sec">
     <h2>To finish the plan · ${gaps.length}</h2>
+    ${(() => { const n = S.canWrite ? gapPairs(S.floor).length : 0; return n ? `<div class="row" style="margin-bottom:8px"><span class="grow note" style="margin:0">${n} small gap${n > 1 ? "s or overlaps" : " or overlap"} between rooms on ${esc(floorOf({ floor: S.floor }).name)}.</span><button class="btn small primary" id="closeGaps">Close gaps</button></div>` : ""; })()}
     ${gaps.length ? `<div class="list">${gaps.slice(0, 60).map(x => `<button class="gap" data-pick="${x.room}"><span class="k ${x.lvl}"></span><span class="t" style="display:flex;flex-direction:column;min-width:0"><span>${esc(x.t)}</span><small class="muted">${esc(x.s)}</small></span></button>`).join("")}</div>` : `<div class="empty">Nothing missing. Every room is measured and photographed.</div>`}
   </div>
   <div class="sec">
@@ -1542,6 +1589,7 @@ function renderTotals() {
   </div>
   <div class="sec"><h2>Outside size</h2>${rows.filter(x => x.fp).map(x => `<p class="num" style="margin:0">${esc(x.f.name)}: ${fmtLen(x.fp.w + 2 * extT() - S.plan.wallT)} × ${fmtLen(x.fp.h + 2 * extT() - S.plan.wallT)}</p>`).join("") || `<p class="note">Add rooms to see the footprint.</p>`}</div>`;
   const ws = pane.querySelector("#waste"); if (ws) ws.onchange = () => { S.waste = +ws.value; renderTotals(); };
+  const cg = pane.querySelector("#closeGaps"); if (cg) cg.onclick = () => closeGaps(S.floor);
 }
 function renderPane() {
   for (const [id, t] of [["tabRooms", "rooms"], ["tabRoom", "room"], ["tabTotals", "totals"]]) $("#" + id).setAttribute("aria-selected", S.tab === t);
