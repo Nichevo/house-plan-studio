@@ -584,14 +584,17 @@ const ITEMS = {
   bookcase: ["Bookcase", "furn", 0.8, 0.3, 1.8, 0], bath: ["Bath", "furn", 1.7, 0.7, 0.55, 0], shower: ["Shower", "furn", 0.9, 0.9, 2.0, 0], toilet: ["Toilet", "furn", 0.4, 0.65, 0.8, 0],
   shed: ["Shed", "gard", 2.4, 1.8, 2.2, 0], greenhouse: ["Greenhouse", "gard", 2.0, 2.5, 2.2, 0], patioset: ["Patio table and chairs", "gard", 1.6, 1.6, 0.75, 0], bbq: ["Barbecue", "gard", 1.2, 0.6, 1.0, 0],
   tree: ["Tree", "gard", 3, 3, 5, 0], bush: ["Bush / shrub", "gard", 1.2, 1.2, 1.2, 0], planter: ["Flower bed / planter", "gard", 2.0, 0.6, 0.4, 0], bins: ["Bins", "gard", 1.4, 0.7, 1.1, 0],
-  trampoline: ["Trampoline", "gard", 3, 3, 0.9, 0], car: ["Car", "gard", 1.8, 4.5, 1.5, 0]
+  trampoline: ["Trampoline", "gard", 3, 3, 0.9, 0], car: ["Car", "gard", 1.8, 4.5, 1.5, 0],
+  stairs: ["Stairs", "furn", 3.6, 0.9, 2.75, 0]
 };
 function makeItem(type, wall = 0, along = 0.2, extra = {}) {
   const d = ITEMS[type] || ITEMS.units;
   return { id: uid(), type: ITEMS[type] ? type : "units", label: d[0], wall, along, out: 0, w: d[2], d: d[3], h: d[4], z: d[5], on: true, ...extra };
 }
 const itemLayer = it => (ITEMS[it.type] || ITEMS.units)[1];
-const layerOn = (L, it) => it.on !== false && (itemLayer(it) === "gard" ? L.garden : L[itemLayer(it)]);
+const layerOn = (L, it) => it.on !== false && (it.type === "stairs" || (itemLayer(it) === "gard" ? L.garden : L[itemLayer(it)]));
+const stairRise = room => { const f = floorOf(room); return f.height + (f.slab ?? 0.25); };
+const stepCount = it => Math.max(3, Math.min(24, Math.round(it.h / 0.19)));
 /* an item sits against one wall: "along" from the wall's start corner, "out" from the wall face */
 function itemFrame(room, it) {
   const e = edges(room)[it.wall] || edges(room)[0], t = isOut(room) ? 0 : S.plan.wallT / 2;
@@ -614,7 +617,7 @@ function parseItems(list, nWalls) {
     return it;
   });
 }
-const ITEM_PROMPT = `Also list the appliances, large furniture and garden features you can see, so they can be drawn on the plan. Allowed types: ${Object.keys(ITEMS).join(", ")}. For each give the wall (or side) it stands against, offset_m from that wall's start corner going clockwise to the item's near edge, from_wall_m (0 if it stands against the wall), width_m along the wall, depth_m out from the wall, height_m, and a short label such as "American fridge freezer". Leave out small objects and anything you cannot place.`;
+const ITEM_PROMPT = `Also list the appliances, large furniture and garden features you can see, so they can be drawn on the plan. Allowed types: ${Object.keys(ITEMS).join(", ")}. For each give the wall (or side) it stands against, offset_m from that wall's start corner going clockwise to the item's near edge, from_wall_m (0 if it stands against the wall), width_m along the wall, depth_m out from the wall, height_m, and a short label such as "American fridge freezer". For stairs, width_m is the length of the flight along the wall (going up towards the wall's end corner) and depth_m is how wide the stairs are; give an L-shaped or turning stair as two flights. Leave out small objects and anything you cannot place.`;
 const ITEM_JSON = `"items":[{"type":"fridge","label":"Fridge freezer","wall":1,"offset_m":0.3,"from_wall_m":0,"width_m":0.6,"depth_m":0.65,"height_m":1.85}]`;
 function door(edge, offset, width = 0.82, extra = {}) { return { id: uid(), type: "door", edge, offset, width, height: 2.03, sill: 0, hinge: "start", swing: "in", ...extra }; }
 /* an open side: the whole wall is missing because the area opens straight into the next one (open-plan) */
@@ -835,11 +838,23 @@ function planMarkup(fid, o) {
       }
     }
   }
+  // stairs coming up from the floor below: show the opening
+  { const idx = S.plan.floors.findIndex(f => f.id === fid), below = S.plan.floors[idx - 1];
+    if (below) for (const r of roomsOn(below.id)) for (const it of r.items || []) { if (it.type !== "stairs" || it.on === false) continue; const f = itemFrame(r, it); out.push(`<polygon points="${f.pts.join(" ")}" fill="var(--panel)" fill-opacity=".7" stroke="var(--wall)" stroke-width="${1.2 / k}" stroke-dasharray="${4 / k} ${3 / k}" pointer-events="none"/>${Math.max(it.w, it.d) * k > 50 ? `<text class="ilbl" x="${f.c[0]}" y="${f.c[1]}" font-size="${fs * 0.72}" transform="rotate(${(() => { let g = Math.atan2(f.e.d[1], f.e.d[0]) * 180 / Math.PI + (it.rot || 0) + (it.d > it.w ? 90 : 0); g = ((g % 360) + 360) % 360; return g > 90 && g <= 270 ? g - 180 : g; })()} ${f.c[0]} ${f.c[1]})" pointer-events="none">Stairs from below</text>` : ""}`); } }
   // appliances, furniture and garden things
   for (const r of rooms) for (const it of r.items || []) {
     const ly = itemLayer(it); if (!layerOn(L, it)) continue;
     const f = itemFrame(r, it);
     out.push(`<polygon class="itm ${ly}" data-item="${r.id}:${it.id}" points="${f.pts.join(" ")}" stroke-width="${1 / k}"/>`);
+    if (it.type === "stairs") {
+      const [b0, b1, b2, b3] = f.pts, n = stepCount(it), L = (a, c, u) => [a[0] + (c[0] - a[0]) * u, a[1] + (c[1] - a[1]) * u];
+      for (let i = 1; i < n; i++) { const u = i / n, A = L(b0, b1, u), B = L(b3, b2, u); out.push(`<line class="sym" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke-width="${0.8 / k}" pointer-events="none"/>`); }
+      const s0 = L(b0, b3, 0.5), s1 = L(b1, b2, 0.5), A = L(s0, s1, 0.08), B = L(s0, s1, 0.9), dx = B[0] - A[0], dy = B[1] - A[1], dl = Math.hypot(dx, dy) || 1, ux = dx / dl, uy = dy / dl, hw = Math.min(0.18, it.d / 3);
+      out.push(`<path class="sym" d="M${A[0]},${A[1]} L${B[0]},${B[1]} M${B[0] - ux * hw - uy * hw},${B[1] - uy * hw + ux * hw} L${B[0]},${B[1]} L${B[0] - ux * hw + uy * hw},${B[1] - uy * hw - ux * hw}" stroke-width="${1.6 / k}" pointer-events="none"/><circle cx="${A[0]}" cy="${A[1]}" r="${Math.min(0.07, it.d / 8)}" class="sym" stroke-width="${1.2 / k}" pointer-events="none"/>`);
+      const ang = Math.atan2(dy, dx) * 180 / Math.PI, a2 = ang > 90 || ang <= -90 ? ang + 180 : ang, mid = L(A, B, 0.35);
+      if (it.d * k > 26) out.push(`<text class="ilbl" x="${mid[0]}" y="${mid[1]}" font-size="${fs * 0.72}" transform="rotate(${a2} ${mid[0]} ${mid[1]}) translate(0 ${-fs * 0.6})" pointer-events="none">Up</text>`);
+      continue;
+    }
     if (it.type === "tree" || it.type === "bush") out.push(`<circle class="itm gard" cx="${f.c[0]}" cy="${f.c[1]}" r="${Math.min(it.w, it.d) / 2}" stroke-width="${1 / k}" pointer-events="none"/>`);
     if (Math.min(it.w, it.d) * k > 22 || Math.max(it.w, it.d) * k > 60) {
       let ang = Math.atan2(f.e.d[1], f.e.d[0]) * 180 / Math.PI + (it.rot || 0); if (it.d > it.w * 1.6) ang += 90; if (ang > 90) ang -= 180; if (ang <= -90) ang += 180;
@@ -1183,7 +1198,7 @@ function renderRoom() {
         <label class="field">Depth<input class="num" data-if="d" value="${esc(fmtIn(it.d))}" ${ro ? "disabled" : ""}></label>
         <label class="field">Height<input class="num" data-if="h" value="${esc(fmtIn(it.h))}" ${ro ? "disabled" : ""}></label>
         <label class="field">Angle<input class="num" data-if="rot" inputmode="decimal" value="${Math.round((it.rot || 0) * 10) / 10}°" ${ro ? "disabled" : ""}></label>
-        ${ro ? "" : `<div class="row" style="grid-column:1/-1"><span class="note" style="margin:0">Turn</span><button class="btn small" data-irot="-45">−45°</button><button class="btn small" data-irot="-15">−15°</button><button class="btn small" data-irot="15">+15°</button><button class="btn small" data-irot="45">+45°</button></div>`}
+        ${ro ? "" : `<div class="row" style="grid-column:1/-1"><span class="note" style="margin:0">Turn</span><button class="btn small" data-irot="-45">−45°</button><button class="btn small" data-irot="-15">−15°</button><button class="btn small" data-irot="15">+15°</button><button class="btn small" data-irot="45">+45°</button>${it.type === "stairs" ? `<button class="btn small" data-irot="180">Reverse</button>` : ""}</div>`}
       </div></div>`).join("") || `<div class="empty">${out ? "Add a shed, trees, a patio or anything else in this space." : "Nothing added yet. Use Find in photos, or pick from the list."} Drag items on the plan to move them.</div>`}
   </div>
   <div class="sec" ${out ? "hidden" : ""}>
@@ -1229,7 +1244,7 @@ function bindRoom(r) {
   on("#rName", "change", e => edit(() => { R().name = e.target.value.trim() || "Room"; }));
   on("#rFloor", "change", e => edit(() => { R().floor = e.target.value; S.floor = e.target.value; }));
   on("#rKind", "change", e => edit(() => { R().kind = e.target.value; }));
-  on("#itAdd", "click", () => edit(() => { const rr = R(), it = makeItem(pane.querySelector("#itPick").value, 0, 0.2); clampItem(rr, it); rr.items.push(it); S.selItem = it.id; }));
+  on("#itAdd", "click", () => edit(() => { const rr = R(), it = makeItem(pane.querySelector("#itPick").value, 0, 0.2); if (it.type === "stairs") it.h = r2(stairRise(rr)); clampItem(rr, it); rr.items.push(it); S.selItem = it.id; }));
   on("#aiItems", "click", () => estimateRoom(id, { itemsOnly: true }));
   pane.querySelectorAll("[data-it]").forEach(box => {
     const iid = box.dataset.it;
@@ -1536,6 +1551,11 @@ function build3D(opts) {
           const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.18, it.h * 0.45, 10), itemMats.gard); trunk.position.set(fr.c[0], elev + it.h * 0.225, fr.c[1]); trunk.name = it.label + " trunk"; rg.add(trunk);
           const crown = new THREE.Mesh(new THREE.SphereGeometry(Math.min(it.w, it.d) / 2, 16, 12), specMats.leaf ||= new THREE.MeshStandardMaterial({ color: 0x4F7F3A, roughness: 0.9 }));
           crown.position.set(fr.c[0], elev + it.h * 0.45 + Math.min(it.w, it.d) / 2 * 0.8, fr.c[1]); crown.name = it.label; rg.add(crown); continue;
+        }
+        if (it.type === "stairs") {
+          const g = new THREE.Group(), n = stepCount(it), run = it.w / n, mat = specMats.stairs ||= new THREE.MeshStandardMaterial({ color: 0xA98763, roughness: 0.8 });
+          for (let i = 0; i < n; i++) { const hh = it.h * (i + 1) / n, st = new THREE.Mesh(new THREE.BoxGeometry(run, hh, it.d), mat); st.position.set(-it.w / 2 + run * (i + 0.5), hh / 2, 0); g.add(st); }
+          g.position.set(fr.c[0], elev, fr.c[1]); g.rotation.y = ang; g.name = it.label; rg.add(g); continue;
         }
         const m = it.type === "bush" ? new THREE.Mesh(new THREE.SphereGeometry(Math.min(it.w, it.d) / 2, 14, 10), matFor(it)) : new THREE.Mesh(new THREE.BoxGeometry(it.w, it.h, it.d), matFor(it));
         m.position.set(fr.c[0], elev + (it.z || 0) + (it.type === "bush" ? Math.min(it.w, it.d) / 2 : it.h / 2), fr.c[1]); m.rotation.y = ang; m.name = it.label; rg.add(m);
