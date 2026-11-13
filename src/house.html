@@ -252,6 +252,11 @@ body.capturing{overflow:hidden}
 .armeasure #arLen{font-size:28px;font-weight:600;min-height:34px}
 .arcross{position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border:2px solid rgba(255,255,255,.8);border-radius:50%}
 .prpick{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.sitebar{position:absolute;left:50%;bottom:calc(12px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:7;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;box-shadow:0 6px 24px rgba(0,0,0,.18);width:min(420px,calc(100% - 24px));font-size:13px}
+.sitebar input[type=range]{flex:1;min-width:80px}
+#plan.aligning{cursor:move}
+.calwrap{position:relative;background:#000;border-radius:8px;overflow:hidden;touch-action:none}
+.calwrap canvas{display:block;width:100%;height:auto}
 @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
 </style>
 
@@ -281,7 +286,15 @@ body.capturing{overflow:hidden}
       <button class="btn" id="addRect">+ Room</button>
       <button class="btn" id="addL">+ L-shaped room</button>
       <button class="btn" id="addGarden">+ Garden</button>
+      <button class="btn" id="siteBtn">Site photo</button>
       <button class="btn" data-layers="1" aria-expanded="false">Show ▾</button>
+    </div>
+    <div class="sitebar" id="siteBar" hidden>
+      <b>Line up the site photo</b>
+      <span class="note" style="margin:0">Drag it so the house outline sits on your rooms. Pinch to zoom as usual.</span>
+      <div class="row"><span>Turn</span><button class="btn small" data-srot="-5">−5°</button><button class="btn small" data-srot="-1">−1°</button><button class="btn small" data-srot="1">+1°</button><button class="btn small" data-srot="5">+5°</button></div>
+      <div class="row"><span>See-through</span><input type="range" id="siteOp" min="0.15" max="1" step="0.05"></div>
+      <div class="row"><span class="grow"></span><button class="btn primary" id="siteDone">Done</button></div>
     </div>
     <div class="overlay ov-tl" id="bar3d" hidden>
       <select id="floors3d" aria-label="Floors shown">
@@ -306,6 +319,7 @@ body.capturing{overflow:hidden}
       <label><input type="checkbox" data-ly="furn"> Furniture</label>
       <label><input type="checkbox" data-ly="garden"> Garden and outdoor</label>
       <label><input type="checkbox" data-ly="photos"> Photos</label>
+      <label data-only="2d"><input type="checkbox" data-ly="site"> Site photo</label>
       <span class="note" data-only="2d">Photos appear as camera dots on the walls. Tap one to see it.</span>
       <span class="note" data-only="3d">Photos are shown on the walls they were tagged to.</span>
     </div>
@@ -553,7 +567,7 @@ function blankPlan() {
     floors: [{ id: "f0", name: "Ground floor", height: 2.5, slab: 0.25 }, { id: "f1", name: "Upstairs", height: 2.4, slab: 0.25 }], rooms: [] };
 }
 const S = { plan: null, floor: "f0", sel: null, selItem: null, view: "2d", tab: "rooms", undo: [], k: 50, tx: 40, ty: 40, canWrite: true, pendingConfirm: null,
-  layers: (() => { const d = { dims: false, labels: true, app: true, furn: true, garden: true, photos: false }; try { return { ...d, ...JSON.parse(localStorage.getItem("house-layers") || "{}") }; } catch { return d; } })() };
+  layers: (() => { const d = { dims: false, labels: true, app: true, furn: true, garden: true, photos: false, site: true }; try { return { ...d, ...JSON.parse(localStorage.getItem("house-layers") || "{}") }; } catch { return d; } })() };
 const localPhotoURL = {}; // photo id -> object URL (photos kept on this device)
 
 function validPlan(p) { return p && Array.isArray(p.rooms) && Array.isArray(p.floors) && p.floors.length; }
@@ -640,6 +654,7 @@ async function loadLocalPhotos() {
     localPhotoURL[p.id] = null;
     try { const b = await idb.get(p.id); if (b) { localPhotoURL[p.id] = URL.createObjectURL(b); } } catch { }
   }
+  for (const st of S.plan.sites || []) if (st.local && localPhotoURL[st.id] === undefined) { localPhotoURL[st.id] = null; try { const b = await idb.get(st.id); if (b) { localPhotoURL[st.id] = URL.createObjectURL(b); renderPlan(); } } catch { } }
   if (S.tab === "room") renderPane();
 }
 const photoURL = p => p.asset ? "/_blob/" + p.asset : localPhotoURL[p.id] || null;
@@ -776,6 +791,10 @@ function planMarkup(fid, o) {
       out.push(`<circle class="knob" cx="${m[0]}" cy="${m[1]}" r="${5.5 / k}" stroke-width="${2 / k}"/>`);
     }
   }
+  if (o.keyWalls) o.keyWalls.forEach((c, i) => {
+    const e = edges(c.room)[c.wall], mx = (e.a[0] + e.b[0]) / 2 + e.n[0] * 0.35, my = (e.a[1] + e.b[1]) / 2 + e.n[1] * 0.35, rr = 9 / k;
+    out.push(`<line x1="${e.a[0]}" y1="${e.a[1]}" x2="${e.b[0]}" y2="${e.b[1]}" stroke="var(--accent)" stroke-width="${4 / k}" stroke-linecap="round" pointer-events="none"/><circle cx="${mx}" cy="${my}" r="${rr}" fill="var(--accent)" pointer-events="none"/><text x="${mx}" y="${my + 4 / k}" text-anchor="middle" font-size="${11 / k}" font-weight="700" fill="var(--accent-ink)" pointer-events="none">${i + 1}</text>`);
+  });
   return out.join("");
 }
 function renderPlan() {
@@ -788,7 +807,9 @@ function renderPlan() {
   for (let x = Math.floor(x0 / minor) * minor; x <= x1; x += minor) { const mj = Math.abs(x / major - Math.round(x / major)) < 1e-6; lines.push(`<line class="${mj ? "gmajor" : "gminor"}" x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke-width="${1 / k}"/>`); }
   for (let y = Math.floor(y0 / minor) * minor; y <= y1; y += minor) { const mj = Math.abs(y / major - Math.round(y / major)) < 1e-6; lines.push(`<line class="${mj ? "gmajor" : "gminor"}" x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke-width="${1 / k}"/>`); }
   grid = lines.join("");
-  svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${grid}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims })}</g>`;
+  const under = (S.plan.sites || []).filter(st => st.floor === S.floor && (S.siteAlign === st.id || (S.layers.site && !st.hidden)) && photoURL(st)).map(st => `<g transform="translate(${st.x} ${st.y}) rotate(${st.rot})" pointer-events="none"><image href="${esc(photoURL(st))}" x="${-st.w * st.mpp / 2}" y="${-st.h * st.mpp / 2}" width="${st.w * st.mpp}" height="${st.h * st.mpp}" opacity="${st.opacity}" preserveAspectRatio="none"/></g>`).join("");
+  svg.classList.toggle("aligning", !!S.siteAlign);
+  svg.innerHTML = `<rect class="bg" width="100%" height="100%"/><g transform="translate(${S.tx} ${S.ty}) scale(${k})">${grid}${under}${planMarkup(S.floor, { k, sel: S.sel, interactive: true, ghost: true, dimsAll: S.layers.dims, keyWalls: S.tab === "totals" && !S.siteAlign ? keyWalls(S.floor) : null })}</g>`;
 }
 function fit(fid) {
   const rooms = fid ? roomsOn(fid) : S.plan.rooms, W = svg.clientWidth || 800, H = svg.clientHeight || 600;
@@ -815,6 +836,7 @@ svg.addEventListener("pointerdown", e => {
     drag = null; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), m: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], k: S.k, tx: S.tx, ty: S.ty };
     return;
   }
+  if (alignSite()) { const st = alignSite(); drag = { type: "site", sc: [e.clientX, e.clientY], p0: toM(e.clientX, e.clientY), start: [st.x, st.y], before: JSON.stringify(S.plan), moved: false }; return; }
   const edgeEl = e.target.closest("[data-edge]"), roomEl = e.target.closest("[data-room]"), camEl = e.target.closest("[data-photo]"), itemEl = e.target.closest("[data-item]");
   const p0 = toM(e.clientX, e.clientY), sc = [e.clientX, e.clientY];
   if (camEl) { const [rid, pid] = camEl.dataset.photo.split(":"); drag = null; pointers.delete(e.pointerId); openPhotoViewer(rid, pid); return; }
@@ -849,6 +871,7 @@ svg.addEventListener("pointermove", e => {
   if (!drag.moved && ds < 4) return;
   drag.moved = true;
   if (drag.type === "pan") { S.tx = drag.tx + e.clientX - drag.sc[0]; S.ty = drag.ty + e.clientY - drag.sc[1]; renderPlan(); return; }
+  if (drag.type === "site") { const st = alignSite(); if (!st) return; const p = toM(e.clientX, e.clientY); st.x = r2(drag.start[0] + p[0] - drag.p0[0]); st.y = r2(drag.start[1] + p[1] - drag.p0[1]); renderPlan(); return; }
   const r = S.plan.rooms.find(x => x.id === drag.id); if (!r) return;
   const p = toM(e.clientX, e.clientY), dx = p[0] - drag.p0[0], dy = p[1] - drag.p0[1], thr = Math.max(0.06, 10 / S.k), grid = S.k > 60 ? 0.05 : 0.1;
   if (drag.type === "item") {
@@ -888,6 +911,7 @@ function endPointer(e) {
   const d = drag; drag = null;
   if (d.type === "pan" && !d.moved) { if (S.sel) { S.sel = null; if (S.tab === "room") S.tab = "rooms"; renderAll(); } return; }
   if (d.type === "item") { if (d.moved) commit(d.before); else renderPane(); return; }
+  if (d.type === "site") { if (d.moved) commit(d.before); return; }
   if ((d.type === "room" || d.type === "edge") && d.moved) {
     const r = S.plan.rooms.find(x => x.id === d.id);
     if (d.type === "edge" && r) { const n = r.pts.length; delete r.measured[(d.i + n - 1) % n]; delete r.measured[(d.i + 1) % n]; }
@@ -1163,6 +1187,39 @@ function neighbourWalls(room, maxGap = 0.6) {
   }
   return out;
 }
+/* the few walls whose measurement would fix the most: rooms with no measured wall in that direction,
+   neighbours sharing the wall, and shared walls whose lengths disagree */
+// two walls back to back that look like the same wall but were drawn a little different
+const wallsDisagree = nb => nb.gap <= S.plan.wallT * 1.6 && Math.abs(nb.len - nb.lenB) > 0.15 && Math.abs(nb.len - nb.lenB) < 0.15 * Math.max(nb.len, nb.lenB) && nb.shared > Math.min(nb.len, nb.lenB) - 0.15;
+function keyWalls(fid, n = 5) {
+  const cand = [], horiz = e => Math.abs(e.d[0]) > Math.abs(e.d[1]);
+  const axisDone = (r, h) => edges(r).some(e => r.measured[e.i] && horiz(e) === h);
+  for (const r of roomsOn(fid)) {
+    if (isOut(r)) continue;
+    const names = wallNames(r), nbs = neighbourWalls(r);
+    for (const e of edges(r)) {
+      if (r.measured[e.i] || e.len < 0.8 || r.openings.some(o => o.type === "open" && o.edge === e.i)) continue;
+      const h = horiz(e); let score = 0; const why = [], fixes = [];
+      if (!axisDone(r, h)) { score += area(r.pts); fixes.push(r.name); }
+      for (const nb of nbs.filter(x => x.wall === e.i && x.gap <= S.plan.wallT * 1.6)) {
+        if (!axisDone(nb.room, h) && !nb.measuredB) { score += area(nb.room.pts) * 0.7; fixes.push(nb.room.name); }
+        if (wallsDisagree(nb)) { score += 8; why.push(`it disagrees with ${nb.room.name} by ${fmtLen(Math.abs(nb.len - nb.lenB))}`); }
+      }
+      if (!score) continue;
+      score += Math.min(e.len, 6) * 0.5; // longer walls give a more accurate scale
+      cand.push({ room: r, wall: e.i, name: names[e.i], len: e.len, h, score, fixes: [...new Set(fixes)], why });
+    }
+  }
+  cand.sort((a, b) => b.score - a.score);
+  const out = [], used = new Set();
+  for (const c of cand) {
+    // one wall per room and direction is enough, and a wall that fixes a neighbour covers it too
+    const keys = c.fixes.map(f => f + (c.h ? "h" : "v"));
+    if (keys.length && keys.every(k => used.has(k)) && !c.why.length) continue;
+    keys.forEach(k => used.add(k)); out.push(c); if (out.length >= n) break;
+  }
+  return out;
+}
 function findGaps() {
   const g = [], cuts = computeCuts(S.plan);
   for (const f of S.plan.floors) {
@@ -1179,7 +1236,7 @@ function findGaps() {
     for (const r of rs) for (const nb of neighbourWalls(r)) {
       const key = [r.id, nb.room.id].sort().join();
       if (nb.gap > S.plan.wallT * 1.6 && !seen.has(key)) { seen.add(key); g.push({ lvl: "info", room: r.id, t: `${r.name} and ${nb.room.name} are ${fmtLen(nb.gap)} apart`, s: "Drag one against the other if they should touch. It snaps into place." }); }
-      if (nb.gap <= S.plan.wallT * 1.6 && Math.abs(nb.len - nb.lenB) > 0.15 && nb.shared > Math.min(nb.len, nb.lenB) - 0.15 && !seen.has(key + "L")) { seen.add(key + "L"); g.push({ lvl: "info", room: r.id, t: `${r.name}'s wall against ${nb.room.name} is ${fmtLen(nb.len)}, but theirs is ${fmtLen(nb.lenB)}`, s: "If they're the same wall, use Estimate with Claude to line them up, or type the right length" }); }
+      if (wallsDisagree(nb) && !seen.has(key + "L")) { seen.add(key + "L"); g.push({ lvl: "info", room: r.id, t: `${r.name}'s wall against ${nb.room.name} is ${fmtLen(nb.len)}, but theirs is ${fmtLen(nb.lenB)}`, s: "If they're the same wall, use Estimate with Claude to line them up, or type the right length" }); }
     }
     for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
       const a = rs[i], b = rs[j], A = bbox(a.pts), B = bbox(b.pts);
@@ -1211,6 +1268,10 @@ function renderTotals() {
     <p class="note">${done} of ${S.plan.rooms.length} rooms have a photo of every wall and real measurements.</p>
   </div>
   <div class="sec">
+    <h2>Measure these next</h2>
+    ${(() => { const kw = keyWalls(S.floor); return kw.length ? `<p class="note" style="margin:0">A tape measure on these walls fixes the most. They're numbered on the plan. Type the length on the Room tab.</p><div class="list">${kw.map((c, i) => `<button class="gap" data-pick="${c.room.id}"><span class="k" style="background:var(--accent)"></span><span class="t" style="display:flex;flex-direction:column;min-width:0"><span><b>${i + 1}.</b> ${esc(c.room.name)}, ${esc(c.name.toLowerCase())} (about ${esc(fmtLen(c.len))})</span><small class="muted">${esc([c.fixes.length ? `Sets the size of ${c.fixes.join(" and ")}` : "", ...c.why].filter(Boolean).join("; "))}</small></span></button>`).join("")}</div>` : `<div class="empty">Every room on this floor has a measured wall each way.</div>`; })()}
+  </div>
+  <div class="sec">
     <h2>To finish the plan · ${gaps.length}</h2>
     ${gaps.length ? `<div class="list">${gaps.slice(0, 60).map(x => `<button class="gap" data-pick="${x.room}"><span class="k ${x.lvl}"></span><span class="t" style="display:flex;flex-direction:column;min-width:0"><span>${esc(x.t)}</span><small class="muted">${esc(x.s)}</small></span></button>`).join("")}</div>` : `<div class="empty">Nothing missing. Every room is measured and photographed.</div>`}
   </div>
@@ -1239,9 +1300,9 @@ pane.addEventListener("click", e => {
   const r = S.plan.rooms.find(x => x.id === b.dataset.pick); if (!r) return;
   S.sel = r.id; S.floor = r.floor; S.tab = "room"; renderAll();
 });
-$("#tabRooms").onclick = () => { S.tab = "rooms"; renderPane(); };
-$("#tabRoom").onclick = () => { S.tab = "room"; renderPane(); };
-$("#tabTotals").onclick = () => { S.tab = "totals"; renderPane(); };
+$("#tabRooms").onclick = () => { S.tab = "rooms"; renderPane(); renderPlan(); };
+$("#tabRoom").onclick = () => { S.tab = "room"; renderPane(); renderPlan(); };
+$("#tabTotals").onclick = () => { S.tab = "totals"; renderPane(); renderPlan(); };
 
 function fixFloor() { if (!S.plan.floors.some(f => f.id === S.floor)) S.floor = S.plan.floors[0].id; }
 function renderTop() {
@@ -2028,6 +2089,101 @@ function openNewArea(fromId, photoIds) {
     } catch (e) { src.photos = keep; status.textContent = (e && e.message) || "Something went wrong. Try again."; go.disabled = false; }
   };
 }
+const sites = () => S.plan.sites || (S.plan.sites = []);
+const alignSite = () => S.siteAlign ? sites().find(x => x.id === S.siteAlign) : null;
+/* site photo: a satellite or map screenshot laid under the plan, scaled from two points a known distance apart */
+async function openSite() {
+  if (!S.canWrite) return;
+  const list = sites();
+  const m = modal("Site photos", `
+    <p style="margin:0">Lay satellite and map screenshots under the plan to line rooms up against the house outline and draw the garden and boundaries. Add the aerial photo and the boundary map as two separate site photos, scale and line up each one, and use See-through to blend them. Google Maps doesn't show property boundaries; your council's online property map (GIS) does.</p>
+    ${list.length ? `<div class="list">${list.map(st => `<div class="op" data-site="${st.id}"><div class="row"><b class="grow">${esc(st.name || "Site photo")}</b>
+        <label class="row" style="gap:4px;font-size:13px"><input type="checkbox" data-sshow ${st.hidden ? "" : "checked"}> Show</label></div>
+        <div class="row"><input class="inp" data-sname value="${esc(st.name || "")}" placeholder="Name, e.g. Satellite" style="flex:1;min-width:120px"></div>
+        <div class="row"><button class="btn small primary" data-salign>Line it up</button><button class="btn small" data-sscale>Set the scale</button><button class="btn small danger" data-sdel>Remove</button></div></div>`).join("")}</div>` : ""}
+    <div class="drop"><span>${list.length ? "Add another, such as the map with boundary lines." : "Take a screenshot with the map's scale bar showing, or include a wall of the house you've measured."}</span><button class="btn ${list.length ? "" : "primary"}" id="sNew">${list.length ? "Add another screenshot" : "Choose a screenshot"}</button></div>
+    <p class="note" style="margin:0">Site photos show on the ${esc(S.plan.floors[0].name)} in the 2D plan only. They stay on this device${store.assets ? " with the plan" : ""} and are left out of exports. Turn them all off under Show.</p>`);
+  const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*";
+  inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return;
+    try {
+      const { blob, w, h } = await downscale(f, 3000, 0.88);
+      const ns = { id: uid(), name: list.length ? (list.length === 1 ? "Map" : `Site photo ${list.length + 1}`) : "Satellite", w, h, mpp: 0.1, x: 0, y: 0, rot: 0, opacity: list.length ? 0.5 : 0.6, floor: S.plan.floors[0].id };
+      if (store.assets) { const up = await store.assets.upload(blob, { type: "image/jpeg" }); ns.asset = up.id; }
+      else { await idb.put(ns.id, blob); localPhotoURL[ns.id] = URL.createObjectURL(blob); ns.local = true; }
+      m.close();
+      calibrateSite(ns, null);
+    } catch (e) { toast((e && e.message) || "That image couldn't be used."); }
+  };
+  m.el.querySelector("#sNew").onclick = () => { inp.value = ""; inp.click(); };
+  m.el.querySelectorAll("[data-site]").forEach(box => {
+    const id = box.dataset.site, st = () => sites().find(x => x.id === id);
+    box.querySelector("[data-sshow]").onchange = e => edit(() => { st().hidden = !e.target.checked; });
+    box.querySelector("[data-sname]").onchange = e => edit(() => { st().name = e.target.value.trim().slice(0, 30); });
+    box.querySelector("[data-salign]").onclick = () => { m.close(); startSiteAlign(id); };
+    box.querySelector("[data-sscale]").onclick = () => { m.close(); calibrateSite(clone(st()), st()); };
+    box.querySelector("[data-sdel]").onclick = async () => { const old = st(); m.close(); edit(() => { S.plan.sites = sites().filter(x => x.id !== id); }); try { if (old.asset && store.assets) await store.assets.delete(old.asset); else await idb.del(old.id); } catch { } };
+  });
+}
+function calibrateSite(ns, old) {
+  const url = photoURL(ns); if (!url) { toast("The photo couldn't be loaded."); return; }
+  const m = modal("Set the scale", `
+    <p style="margin:0">Tap the two ends of something whose length you know: the map's scale bar, or a wall of the house you've measured. Zoom in on the screenshot first if it's small.</p>
+    <div class="calwrap"><canvas id="calCv"></canvas></div>
+    <div class="grid2"><label class="field">Real length between the two points<input class="num" id="calLen" inputmode="decimal" placeholder="${S.plan.units === "ft" ? `e.g. 50'` : "e.g. 20"}"></label><span class="note" id="calPx" style="align-self:end"></span></div>
+    <div class="row"><button class="btn" id="calReset">Start again</button><span class="grow"></span><button class="btn primary" id="calGo" disabled>Next: line it up</button></div>`, true);
+  const cv = m.el.querySelector("#calCv"), ctx = cv.getContext("2d"), img = new Image(), pts = [];
+  const draw = () => {
+    ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    const lw = Math.max(2, cv.width / 400);
+    ctx.strokeStyle = "#ff3b30"; ctx.fillStyle = "#ff3b30"; ctx.lineWidth = lw;
+    if (pts.length === 2) { ctx.beginPath(); ctx.moveTo(...pts[0]); ctx.lineTo(...pts[1]); ctx.stroke(); }
+    for (const q of pts) { ctx.beginPath(); ctx.arc(q[0], q[1], lw * 3, 0, 7); ctx.fill(); }
+    const L = parseLen(m.el.querySelector("#calLen").value);
+    m.el.querySelector("#calGo").disabled = !(pts.length === 2 && L && L > 0.5);
+    m.el.querySelector("#calPx").textContent = pts.length === 2 ? "Line drawn. Now type its real length." : pts.length ? "Now tap the other end." : "Tap the first end.";
+  };
+  img.onload = () => { cv.width = img.naturalWidth; cv.height = img.naturalHeight; draw(); };
+  img.src = url;
+  cv.addEventListener("pointerdown", e => {
+    const b = cv.getBoundingClientRect(), q = [(e.clientX - b.left) * cv.width / b.width, (e.clientY - b.top) * cv.height / b.height];
+    if (pts.length === 2) pts.length = 0; pts.push(q); draw();
+  });
+  m.el.querySelector("#calLen").addEventListener("input", draw);
+  m.el.querySelector("#calReset").onclick = () => { pts.length = 0; draw(); };
+  m.el.querySelector("#calGo").onclick = () => {
+    const L = parseLen(m.el.querySelector("#calLen").value), px = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) * ns.w / cv.width;
+    ns.mpp = L / px;
+    if (!old) { // new photo: start it over the last site photo, or the middle of this floor's rooms
+      const prev = sites()[sites().length - 1], rs = roomsOn(ns.floor), b = rs.length ? bbox(rs.flatMap(r => r.pts)) : null;
+      if (prev) { ns.x = prev.x; ns.y = prev.y; ns.rot = prev.rot; } else { ns.x = b ? r2(b.x0 + b.w / 2) : 0; ns.y = b ? r2(b.y0 + b.h / 2) : 0; }
+    }
+    m.close();
+    const before = JSON.stringify(S.plan);
+    if (old) Object.assign(old, { mpp: ns.mpp }); else sites().push(ns);
+    commit(before);
+    startSiteAlign(ns.id);
+  };
+}
+function startSiteAlign(id) {
+  const st = sites().find(x => x.id === id); if (!st) return;
+  if (S.view !== "2d") $("#v2d").click();
+  if (S.floor !== st.floor) { S.floor = st.floor; renderAll(); }
+  S.siteAlign = id; S.sel = null; if (st.hidden) st.hidden = false;
+  const bar = $("#siteBar"); bar.hidden = false; $("#addBar").hidden = true;
+  bar.querySelector("b").textContent = `Line up: ${st.name || "site photo"}`;
+  $("#siteOp").value = st.opacity;
+  // show the whole photo
+  const W = svg.clientWidth || 600, H = svg.clientHeight || 400, w = st.w * st.mpp, h = st.h * st.mpp, k = Math.min(W / w, H / h) * 0.9;
+  S.k = k; S.tx = W / 2 - st.x * k; S.ty = H / 2 - st.y * k;
+  renderPlan();
+}
+function endSiteAlign() { S.siteAlign = null; $("#siteBar").hidden = true; $("#addBar").hidden = false; renderAll(); }
+$("#siteBtn").onclick = openSite;
+$("#siteDone").onclick = endSiteAlign;
+document.querySelectorAll("[data-srot]").forEach(b => b.onclick = () => { const st = alignSite(); if (!st) return; const before = JSON.stringify(S.plan); st.rot = ((st.rot + +b.dataset.srot) % 360 + 360) % 360; commit(before); renderPlan(); });
+$("#siteOp").addEventListener("input", e => { const st = alignSite(); if (st) { st.opacity = +e.target.value; renderPlan(); } });
+$("#siteOp").addEventListener("change", () => commit());
 async function buildRoomFromPhotos(files, opt, progress) {
   const photos = [], aiBlobs = [];
   if (opt.photos) { // rebuilding a room from the photos it already has
@@ -2317,7 +2473,7 @@ async function exportProjectZip() {
   if (!window.JSZip) { toast("The zip tool couldn't load. Check your connection and reload."); return; }
   const zip = new JSZip(), n = slug(S.plan.name); let missing = 0;
   zip.file("project.json", JSON.stringify(S.plan, null, 1));
-  for (const r of S.plan.rooms) for (const p of r.photos) {
+  for (const p of [...S.plan.rooms.flatMap(r => r.photos), ...(S.plan.sites || [])]) {
     try { zip.file(`photos/${p.id}.jpg`, await photoBlob(p)); } catch { missing++; }
   }
   setSync("busy", "Packing project…");
@@ -2330,8 +2486,9 @@ async function readProjectFile(f) {
     if (!window.JSZip) throw 0;
     const zip = await JSZip.loadAsync(f), pj = zip.file("project.json"); if (!pj) throw 0;
     const p = JSON.parse(await pj.async("string")); if (!validPlan(p)) throw 0;
-    let i = 0, total = p.rooms.reduce((s, r) => s + r.photos.length, 0);
-    for (const r of p.rooms) for (const ph of r.photos) {
+    const all = [...p.rooms.flatMap(r => r.photos), ...(Array.isArray(p.sites) ? p.sites : [])];
+    let i = 0, total = all.length;
+    for (const ph of all) {
       const zf = zip.file(`photos/${ph.id}.jpg`); if (!zf) continue;
       setSync("busy", `Restoring photo ${++i} of ${total}…`);
       const blob = new Blob([await zf.async("arraybuffer")], { type: "image/jpeg" });
